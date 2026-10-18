@@ -1,0 +1,12 @@
+/target/
+**/*.rs.bk
+*.pdb
+*.log
+deps/*.7z
+bench_results_*.json
+test_wallpaper.bmp
+.vscode/
+.idea/
+node_modules/
+/dist/
+/ui/src-tauri/target/
