@@ -4,6 +4,7 @@ mod single_instance;
 mod tray;
 
 use anyhow::{bail, Context, Result};
+use audio_engine::AudioEngine;
 use common::{logs_dir, AppConfig, WallpaperItem};
 use desktop_host::{
     apply_eco_profile, collect_diag, enumerate_monitors, DesktopHostWindow, RenderMode,
@@ -35,6 +36,7 @@ struct DaemonContext {
     governor: Arc<Mutex<Governor>>,
     active_wallpaper: Arc<Mutex<Option<WallpaperItem>>>,
     should_quit: Arc<AtomicBool>,
+    audio: Arc<AudioEngine>,
 }
 
 impl IpcHandler for DaemonContext {
@@ -128,6 +130,136 @@ impl IpcHandler for DaemonContext {
                 crate::autostart::set_autostart(enabled)?;
                 Ok(serde_json::json!({ "enabled": enabled }))
             }
+            "audio.getTrack" => {
+                // Try SMTC first
+                let track = self.audio.smtc.get_current_track()?;
+                if let Some(t) = track {
+                    return Ok(serde_json::to_value(t)?);
+                }
+
+                // Check local player
+                if let Some(local_t) = self.audio.player.current_track() {
+                    return Ok(serde_json::json!({
+                        "title": local_t.title,
+                        "artist": local_t.artist,
+                        "album_title": "",
+                        "album_artist": "",
+                        "playback_status": if self.audio.player.is_playing() { "Playing" } else { "Paused" },
+                        "source_app": "wallmus",
+                        "position_ms": null,
+                        "duration_ms": local_t.duration_ms,
+                        "cover_path": null,
+                    }));
+                }
+
+                Ok(serde_json::Value::Null)
+            }
+            "audio.control" => {
+                let action = params
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .context("Missing 'action' parameter (play/pause/toggle/next/previous)")?;
+
+                let res = match action {
+                    "play" => {
+                        if self.audio.player.is_playing() {
+                            self.audio.player.play();
+                            true
+                        } else {
+                            self.audio.smtc.play().unwrap_or(false)
+                        }
+                    }
+                    "pause" => {
+                        if self.audio.player.is_playing() {
+                            self.audio.player.pause();
+                            true
+                        } else {
+                            self.audio.smtc.pause().unwrap_or(false)
+                        }
+                    }
+                    "toggle" => {
+                        if self.audio.player.is_playing() {
+                            self.audio.player.toggle_play_pause();
+                            true
+                        } else {
+                            self.audio.smtc.toggle_play_pause().unwrap_or(false)
+                        }
+                    }
+                    "next" => {
+                        if self.audio.player.is_playing() {
+                            let _ = self.audio.player.next();
+                            true
+                        } else {
+                            self.audio.smtc.skip_next().unwrap_or(false)
+                        }
+                    }
+                    "previous" => {
+                        if self.audio.player.is_playing() {
+                            let _ = self.audio.player.previous();
+                            true
+                        } else {
+                            self.audio.smtc.skip_previous().unwrap_or(false)
+                        }
+                    }
+                    _ => bail!("Unknown audio action: {}", action),
+                };
+
+                Ok(serde_json::json!({ "success": res }))
+            }
+            "audio.getSpectrum" => {
+                let bars = params
+                    .get("bars")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(32) as usize;
+                let spectrum = self.audio.visualizer.get_spectrum(bars);
+                Ok(serde_json::json!({ "spectrum": spectrum }))
+            }
+            "audio.setWallpaperVolume" => {
+                if let Some(vol) = params.get("volume").and_then(|v| v.as_u64()) {
+                    self.audio.wallpaper_audio.set_volume(vol as u32);
+                }
+                if let Some(muted) = params.get("muted").and_then(|v| v.as_bool()) {
+                    self.audio.wallpaper_audio.set_muted(muted);
+                }
+                Ok(serde_json::json!({
+                    "effective_volume": self.audio.wallpaper_audio.get_effective_volume(),
+                    "muted": self.audio.wallpaper_audio.is_muted(),
+                }))
+            }
+            "audio.getWallpaperVolume" => {
+                Ok(serde_json::json!({
+                    "effective_volume": self.audio.wallpaper_audio.get_effective_volume(),
+                    "muted": self.audio.wallpaper_audio.is_muted(),
+                }))
+            }
+            "player.playFile" => {
+                let path = params
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .context("Missing 'path' parameter")?;
+                let title = params
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
+                let artist = params
+                    .get("artist")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
+
+                self.audio.player.play_file(Path::new(path), title, artist)?;
+                Ok(serde_json::json!({ "status": "playing" }))
+            }
+            "player.getState" => {
+                Ok(serde_json::json!({
+                    "is_playing": self.audio.player.is_playing(),
+                    "volume": self.audio.player.get_volume(),
+                    "repeat_mode": format!("{:?}", self.audio.player.get_repeat_mode()),
+                    "shuffle": self.audio.player.is_shuffle(),
+                    "current_track": self.audio.player.current_track(),
+                }))
+            }
             _ => bail!("Unknown IPC method: {}", method),
         }
     }
@@ -187,6 +319,17 @@ fn main() -> Result<()> {
     }
     if args.iter().any(|arg| arg == "--resume") {
         return run_cli_pause(false);
+    }
+    if args.iter().any(|arg| arg == "--track") {
+        return run_cli_track();
+    }
+    if args.iter().any(|arg| arg == "--spectrum") {
+        return run_cli_spectrum();
+    }
+    if let Some(pos) = args.iter().position(|arg| arg == "--control") {
+        if let Some(action) = args.get(pos + 1) {
+            return run_cli_control(action);
+        }
     }
 
     // 3. Single Instance Guard
@@ -267,6 +410,7 @@ fn run_daemon() -> Result<()> {
         warn!("Governor hooks could not be started: {e}");
     }
     let governor_arc = Arc::new(Mutex::new(governor));
+    let audio = Arc::new(AudioEngine::new());
 
     let ctx = Arc::new(DaemonContext {
         db: db.clone(),
@@ -274,6 +418,7 @@ fn run_daemon() -> Result<()> {
         governor: governor_arc.clone(),
         active_wallpaper: active_wallpaper.clone(),
         should_quit: should_quit.clone(),
+        audio: audio.clone(),
     });
 
     // Start IPC Server
@@ -363,6 +508,8 @@ fn run_daemon() -> Result<()> {
                                 for r in &mut renderers {
                                     let _ = r.pause();
                                 }
+                                audio.visualizer.set_paused(true);
+                                audio.wallpaper_audio.fade_out();
                                 tray.update_state(true);
                                 info!("Paused rendering due to: {:?}", reason);
                             }
@@ -370,6 +517,8 @@ fn run_daemon() -> Result<()> {
                                 for r in &mut renderers {
                                     let _ = r.resume();
                                 }
+                                audio.visualizer.set_paused(false);
+                                audio.wallpaper_audio.fade_in();
                                 tray.update_state(false);
                                 info!("Resumed rendering");
                             }
@@ -377,6 +526,8 @@ fn run_daemon() -> Result<()> {
                                 for r in &mut renderers {
                                     let _ = r.unload();
                                 }
+                                audio.visualizer.set_paused(true);
+                                audio.wallpaper_audio.fade_out();
                                 info!("Unloaded renderers");
                             }
                         }
@@ -435,6 +586,49 @@ fn run_cli_pause(pause: bool) -> Result<()> {
     let method = if pause { "wallpapers.pause" } else { "wallpapers.resume" };
     println!("Sending {} command to daemon...", method);
     let resp = send_request(method, serde_json::Value::Null)?;
+    println!("Daemon response: {:?}", resp);
+    Ok(())
+}
+
+fn run_cli_track() -> Result<()> {
+    let resp = send_request("audio.getTrack", serde_json::Value::Null)?;
+    if resp.ok {
+        match resp.result {
+            Some(ref v) if !v.is_null() => {
+                println!("Currently Playing Media Track:");
+                println!("{}", serde_json::to_string_pretty(v)?);
+            }
+            _ => println!("No media currently playing."),
+        }
+    } else {
+        eprintln!("Error querying track: {:?}", resp.error);
+    }
+    Ok(())
+}
+
+fn run_cli_spectrum() -> Result<()> {
+    let resp = send_request("audio.getSpectrum", serde_json::json!({ "bars": 32 }))?;
+    if resp.ok {
+        if let Some(val) = resp.result {
+            if let Some(arr) = val.get("spectrum").and_then(|s| s.as_array()) {
+                println!("Real-time Audio Spectrum (32 bands):");
+                for (i, v) in arr.iter().enumerate() {
+                    let level = v.as_f64().unwrap_or(0.0);
+                    let bar_len = (level * 40.0) as usize;
+                    let bar_str = "#".repeat(bar_len);
+                    println!("{:2}: {:<40} ({:.2})", i + 1, bar_str, level);
+                }
+            }
+        }
+    } else {
+        eprintln!("Error querying spectrum: {:?}", resp.error);
+    }
+    Ok(())
+}
+
+fn run_cli_control(action: &str) -> Result<()> {
+    println!("Sending audio.control action '{}'...", action);
+    let resp = send_request("audio.control", serde_json::json!({ "action": action }))?;
     println!("Daemon response: {:?}", resp);
     Ok(())
 }
