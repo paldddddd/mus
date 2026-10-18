@@ -78,8 +78,23 @@ impl IpcServer {
 
     pub fn stop(&self) {
         self.running.store(false, Ordering::SeqCst);
-        // Wakeup pipe by sending a dummy ping client connect
-        let _ = send_request("app.getState", serde_json::Value::Null);
+        // Wakeup pipe ConnectNamedPipe by opening and immediately closing handle
+        let wide_pipe: Vec<u16> = PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            if let Ok(h) = CreateFileW(
+                windows::core::PCWSTR(wide_pipe.as_ptr()),
+                FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+                windows::Win32::Storage::FileSystem::FILE_SHARE_NONE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAGS_AND_ATTRIBUTES(0),
+                HANDLE::default(),
+            ) {
+                if !h.is_invalid() {
+                    let _ = CloseHandle(h);
+                }
+            }
+        }
     }
 }
 

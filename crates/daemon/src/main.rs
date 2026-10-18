@@ -6,6 +6,7 @@ mod tray;
 use anyhow::{bail, Context, Result};
 use audio_engine::AudioEngine;
 use common::{logs_dir, AppConfig, WallpaperItem};
+use widget::WidgetController;
 use desktop_host::{
     apply_eco_profile, collect_diag, enumerate_monitors, DesktopHostWindow, RenderMode,
 };
@@ -260,6 +261,45 @@ impl IpcHandler for DaemonContext {
                     "current_track": self.audio.player.current_track(),
                 }))
             }
+            "widget.getState" => {
+                let cfg = self.config.lock().unwrap();
+                Ok(serde_json::to_value(&cfg.widget)?)
+            }
+            "widget.setTheme" => {
+                let theme = params
+                    .get("theme")
+                    .and_then(|v| v.as_str())
+                    .context("Missing 'theme' parameter (spotify/pill/vinyl/glass)")?;
+                let mut cfg = self.config.lock().unwrap();
+                cfg.widget.theme = theme.to_string();
+                let _ = cfg.save();
+                Ok(serde_json::json!({ "theme": theme }))
+            }
+            "widget.setPosition" => {
+                let x = params
+                    .get("x")
+                    .and_then(|v| v.as_i64())
+                    .context("Missing 'x' parameter")? as i32;
+                let y = params
+                    .get("y")
+                    .and_then(|v| v.as_i64())
+                    .context("Missing 'y' parameter")? as i32;
+                let mut cfg = self.config.lock().unwrap();
+                cfg.widget.x = x;
+                cfg.widget.y = y;
+                let _ = cfg.save();
+                Ok(serde_json::json!({ "x": x, "y": y }))
+            }
+            "widget.setEnabled" => {
+                let enabled = params
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .context("Missing 'enabled' parameter")?;
+                let mut cfg = self.config.lock().unwrap();
+                cfg.widget.enabled = enabled;
+                let _ = cfg.save();
+                Ok(serde_json::json!({ "enabled": enabled }))
+            }
             _ => bail!("Unknown IPC method: {}", method),
         }
     }
@@ -330,6 +370,14 @@ fn main() -> Result<()> {
         if let Some(action) = args.get(pos + 1) {
             return run_cli_control(action);
         }
+    }
+    if let Some(pos) = args.iter().position(|arg| arg == "--widget-theme") {
+        if let Some(theme) = args.get(pos + 1) {
+            return run_cli_widget_theme(theme);
+        }
+    }
+    if args.iter().any(|arg| arg == "--quit" || arg == "--exit" || arg == "--stop") {
+        return run_cli_quit();
     }
 
     // 3. Single Instance Guard
@@ -428,6 +476,61 @@ fn run_daemon() -> Result<()> {
     // Create System Tray
     let tray = SystemTray::create(false).context("Failed to create system tray")?;
     info!("System tray initialized");
+
+    // Initialize Desktop Music Widget
+    let widget_cfg = Arc::new(Mutex::new(config.lock().unwrap().widget.clone()));
+    let audio_cb = audio.clone();
+    let on_action: widget::ActionCallback = Arc::new(move |action: &str| {
+        info!("Widget action clicked: {action}");
+        match action {
+            "toggle" => {
+                if audio_cb.player.is_playing() {
+                    audio_cb.player.toggle_play_pause();
+                } else {
+                    let _ = audio_cb.smtc.toggle_play_pause();
+                }
+            }
+            "previous" => {
+                if audio_cb.player.is_playing() {
+                    let _ = audio_cb.player.previous();
+                } else {
+                    let _ = audio_cb.smtc.skip_previous();
+                }
+            }
+            "next" => {
+                if audio_cb.player.is_playing() {
+                    let _ = audio_cb.player.next();
+                } else {
+                    let _ = audio_cb.smtc.skip_next();
+                }
+            }
+            _ => {}
+        }
+    });
+
+    let config_cb = config.clone();
+    let on_moved: widget::PositionCallback = Arc::new(move |x: i32, y: i32| {
+        let mut cfg = config_cb.lock().unwrap();
+        cfg.widget.x = x;
+        cfg.widget.y = y;
+        let _ = cfg.save();
+        info!("Widget moved to ({x}, {y}) - config saved");
+    });
+
+    let mut widget_controller = if widget_cfg.lock().unwrap().enabled {
+        match WidgetController::new(widget_cfg.clone(), audio.clone(), Some(on_action), Some(on_moved)) {
+            Ok(w) => {
+                info!("Desktop music widget window initialized");
+                Some(w)
+            }
+            Err(e) => {
+                warn!("Failed to initialize desktop music widget: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     info!("wallmus daemon running. Entering main event loop...");
 
@@ -536,6 +639,12 @@ fn run_daemon() -> Result<()> {
                 }
             }
 
+            // Update widget window frame
+            if let Some(ref mut w) = widget_controller {
+                let is_paused = last_state != GovernorState::Running;
+                w.update(is_paused);
+            }
+
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -629,6 +738,20 @@ fn run_cli_spectrum() -> Result<()> {
 fn run_cli_control(action: &str) -> Result<()> {
     println!("Sending audio.control action '{}'...", action);
     let resp = send_request("audio.control", serde_json::json!({ "action": action }))?;
+    println!("Daemon response: {:?}", resp);
+    Ok(())
+}
+
+fn run_cli_widget_theme(theme: &str) -> Result<()> {
+    println!("Setting widget theme to '{}'...", theme);
+    let resp = send_request("widget.setTheme", serde_json::json!({ "theme": theme }))?;
+    println!("Daemon response: {:?}", resp);
+    Ok(())
+}
+
+fn run_cli_quit() -> Result<()> {
+    println!("Requesting wallmus daemon to quit...");
+    let resp = send_request("app.quit", serde_json::Value::Null)?;
     println!("Daemon response: {:?}", resp);
     Ok(())
 }

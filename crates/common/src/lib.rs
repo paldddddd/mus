@@ -4,7 +4,7 @@ pub mod config;
 pub mod models;
 pub mod paths;
 
-pub use config::{AppConfig, GovernorConfig};
+pub use config::{AppConfig, GovernorConfig, WidgetConfig};
 pub use models::{WallpaperItem, WallpaperKind};
 pub use paths::*;
 

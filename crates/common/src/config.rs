@@ -29,6 +29,40 @@ impl Default for GovernorConfig {
     }
 }
 
+/// Desktop music widget settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WidgetConfig {
+    pub enabled: bool,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub scale: f32,
+    pub theme: String, // "spotify", "pill", "vinyl", "glass"
+    pub pinned: bool,
+    pub interactive: bool,
+    pub visualizer_bars: u32,
+    pub opacity: f32,
+}
+
+impl Default for WidgetConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            x: 80,
+            y: 80,
+            width: 380,
+            height: 150,
+            scale: 1.0,
+            theme: "spotify".to_string(),
+            pinned: false,
+            interactive: true,
+            visualizer_bars: 24,
+            opacity: 0.95,
+        }
+    }
+}
+
 /// Global application configuration stored in `%APPDATA%/wallmus/config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -39,6 +73,8 @@ pub struct AppConfig {
     pub active_wallpaper_id: Option<String>,
     pub fps_limit: u32,
     pub governor: GovernorConfig,
+    #[serde(default)]
+    pub widget: WidgetConfig,
 }
 
 impl Default for AppConfig {
@@ -51,6 +87,7 @@ impl Default for AppConfig {
             active_wallpaper_id: None,
             fps_limit: 30,
             governor: GovernorConfig::default(),
+            widget: WidgetConfig::default(),
         }
     }
 }

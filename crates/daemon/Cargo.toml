@@ -16,6 +16,7 @@ library = { path = "../library" }
 media = { path = "../media" }
 governor = { path = "../governor" }
 audio-engine = { path = "../audio-engine" }
+widget = { path = "../widget" }
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

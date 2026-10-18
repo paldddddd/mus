@@ -8,6 +8,7 @@ members = [
     "crates/media",
     "crates/governor",
     "crates/audio-engine",
+    "crates/widget",
     "crates/daemon",
 ]
 
