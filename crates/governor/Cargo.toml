@@ -1,0 +1,27 @@
+[package]
+name = "governor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+common = { path = "../common" }
+desktop-host = { path = "../desktop-host" }
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dependencies.windows]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Shell",
+    "Win32_Graphics_Dwm",
+    "Win32_System_Power",
+    "Win32_System_Threading",
+    "Win32_System_RemoteDesktop",
+]

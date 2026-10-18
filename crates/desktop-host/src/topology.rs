@@ -33,14 +33,24 @@ pub fn ensure_default_desktop() {
             );
             let desk_len = (desk_needed as usize / 2).saturating_sub(1);
             let desk_name = String::from_utf16_lossy(&desk_buf[..desk_len]);
-            if !desk_name.eq_ignore_ascii_case("default") {
-                if let Ok(default_desk) = OpenDesktopW(
+            let clean_name = desk_name.trim_matches('\0').trim();
+            if !clean_name.eq_ignore_ascii_case("default") {
+                match OpenDesktopW(
                     w!("Default"),
                     DESKTOP_CONTROL_FLAGS(0),
                     false,
                     0x10000000,
                 ) {
-                    let _ = SetThreadDesktop(default_desk);
+                    Ok(default_desk) => {
+                        if let Err(e) = SetThreadDesktop(default_desk) {
+                            tracing::warn!("Failed to switch thread desktop from '{clean_name}' to Default: {e}");
+                        } else {
+                            tracing::info!("Switched thread desktop from '{clean_name}' to Default");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to OpenDesktopW('Default'): {e}");
+                    }
                 }
             }
         }

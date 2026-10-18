@@ -1,15 +1,21 @@
 //! Common types, error definitions, and IPC contracts for wallmus.
 
+pub mod config;
+pub mod models;
+pub mod paths;
+
+pub use config::{AppConfig, GovernorConfig};
+pub use models::{WallpaperItem, WallpaperKind};
+pub use paths::*;
+
 use serde::{Deserialize, Serialize};
 
 /// High-level topology classification of the Windows desktop window hierarchy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Topology {
     /// Windows 10 and Windows 11 prior to 24H2.
-    /// SHELLDLL_DefView resides inside a WorkerW window spawned by 0x052C message to Progman.
     Classic,
     /// Windows 11 24H2 and newer.
-    /// Progman is created with WS_EX_NOREDIRECTIONBITMAP and SHELLDLL_DefView is a layered child of Progman.
     Raised,
     /// Unknown window hierarchy configuration.
     Unknown(String),

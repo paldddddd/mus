@@ -3,6 +3,9 @@
 *.pdb
 *.log
 deps/*.7z
+deps/*.exe
+deps/*.dll
+diag_report.json
 bench_results_*.json
 test_wallpaper.bmp
 .vscode/

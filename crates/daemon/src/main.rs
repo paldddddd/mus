@@ -1,66 +1,442 @@
-use anyhow::{Context, Result};
-use desktop_host::{collect_diag, enumerate_monitors, DesktopHostWindow, RenderMode};
+mod autostart;
+mod ipc;
+mod single_instance;
+mod tray;
+
+use anyhow::{bail, Context, Result};
+use common::{logs_dir, AppConfig, WallpaperItem};
+use desktop_host::{
+    apply_eco_profile, collect_diag, enumerate_monitors, DesktopHostWindow, RenderMode,
+};
+use governor::{Governor, GovernorState};
+use ipc::{send_request, IpcHandler, IpcServer};
+use library::Database;
+use media::import_wallpaper;
+use render::{MpvRenderer, Renderer, StaticImageRenderer};
+use single_instance::SingleInstanceGuard;
 use std::env;
 use std::fs::File;
 use std::io::Write;
 use std::panic;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tracing::info;
+use tracing::{info, warn};
+use tray::SystemTray;
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
 };
 
+/// Daemon runtime controller managing wallpaper playback and IPC.
+struct DaemonContext {
+    db: Arc<Database>,
+    config: Arc<Mutex<AppConfig>>,
+    governor: Arc<Mutex<Governor>>,
+    active_wallpaper: Arc<Mutex<Option<WallpaperItem>>>,
+    should_quit: Arc<AtomicBool>,
+}
+
+impl IpcHandler for DaemonContext {
+    fn handle_method(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+        match method {
+            "app.getState" => {
+                let cfg = self.config.lock().unwrap().clone();
+                let active = self.active_wallpaper.lock().unwrap().clone();
+                let gov = self.governor.lock().unwrap();
+                let is_paused = gov.is_manual_paused();
+
+                Ok(serde_json::json!({
+                    "running": true,
+                    "is_paused": is_paused,
+                    "active_wallpaper": active,
+                    "config": cfg,
+                }))
+            }
+            "app.quit" => {
+                info!("IPC requested app.quit");
+                self.should_quit.store(true, Ordering::SeqCst);
+                Ok(serde_json::json!({ "status": "quitting" }))
+            }
+            "app.openUi" => {
+                info!("IPC requested app.openUi (shortcut or tray trigger)");
+                // In Stage 4, this launches or focuses Tauri UI
+                Ok(serde_json::json!({ "status": "ui_requested" }))
+            }
+            "wallpapers.list" => {
+                let list = self.db.list_wallpapers()?;
+                Ok(serde_json::to_value(list)?)
+            }
+            "wallpapers.import" => {
+                let path_str = params
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .context("Missing 'path' parameter")?;
+                let copy = params
+                    .get("copy")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let item = import_wallpaper(Path::new(path_str), copy)?;
+                self.db.save_wallpaper(&item)?;
+                Ok(serde_json::to_value(item)?)
+            }
+            "wallpapers.setActive" => {
+                let id = params
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .context("Missing 'id' parameter")?;
+                let list = self.db.list_wallpapers()?;
+                let found = list.into_iter().find(|w| w.id == id);
+                if let Some(wp) = found {
+                    let mut active = self.active_wallpaper.lock().unwrap();
+                    *active = Some(wp.clone());
+                    let _ = self.db.set_kv("active_wallpaper_id", id);
+                    Ok(serde_json::to_value(wp)?)
+                } else {
+                    bail!("Wallpaper with id '{}' not found", id);
+                }
+            }
+            "governor.getState" => {
+                let gov = self.governor.lock().unwrap();
+                Ok(serde_json::json!({
+                    "manual_paused": gov.is_manual_paused(),
+                }))
+            }
+            "wallpapers.pause" => {
+                let gov = self.governor.lock().unwrap();
+                gov.set_manual_pause(true);
+                Ok(serde_json::json!({ "manual_paused": true }))
+            }
+            "wallpapers.resume" => {
+                let gov = self.governor.lock().unwrap();
+                gov.set_manual_pause(false);
+                Ok(serde_json::json!({ "manual_paused": false }))
+            }
+            "diag.dump" => {
+                let diag = collect_diag()?;
+                Ok(serde_json::to_value(diag)?)
+            }
+            "settings.getAutostart" => {
+                let enabled = crate::autostart::is_autostart_enabled();
+                Ok(serde_json::json!({ "enabled": enabled }))
+            }
+            "settings.setAutostart" => {
+                let enabled = params
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .context("Missing 'enabled' boolean parameter")?;
+                crate::autostart::set_autostart(enabled)?;
+                Ok(serde_json::json!({ "enabled": enabled }))
+            }
+            _ => bail!("Unknown IPC method: {}", method),
+        }
+    }
+}
+
 fn main() -> Result<()> {
-    // 1. Setup panic hook to log panics gracefully as required by section 5.6
+    // 0. Ensure main thread is bound to WinSta0\Default desktop before creating any windows or hooks
+    desktop_host::ensure_default_desktop();
+
+    // 1. Safety Panic Hook
     panic::set_hook(Box::new(|panic_info| {
-        eprintln!("CRITICAL PANIC: {:?}", panic_info);
+        eprintln!("CRITICAL PANIC in wallmus daemon: {:?}", panic_info);
     }));
 
-    // 2. Initialize tracing
+    // 2. Setup Logging to file and console
+    let _ = common::ensure_app_dirs();
+    let file_appender = tracing_appender::rolling::daily(logs_dir(), "wallmus.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with_writer(non_blocking)
         .init();
 
     let args: Vec<String> = env::args().collect();
 
+    // CLI Commands
     if args.iter().any(|arg| arg == "--diag") {
         return run_diag();
     }
-
-    if let Some(pos) = args.iter().position(|arg| arg == "--image") {
-        if let Some(image_path) = args.get(pos + 1) {
-            return run_image_test(image_path, 10);
-        } else {
-            eprintln!("Error: --image requires a file path");
-            std::process::exit(1);
-        }
-    }
-
-    if let Some(pos) = args.iter().position(|arg| arg == "--video") {
-        if let Some(video_path) = args.get(pos + 1) {
-            return run_video_test(video_path, 10);
-        } else {
-            eprintln!("Error: --video requires a file path");
-            std::process::exit(1);
-        }
-    }
-
     if args.iter().any(|arg| arg == "--selftest") {
         return run_selftest(10);
     }
+    if let Some(pos) = args.iter().position(|arg| arg == "--image") {
+        if let Some(image_path) = args.get(pos + 1) {
+            return run_image_test(image_path, 10);
+        }
+    }
+    if let Some(pos) = args.iter().position(|arg| arg == "--video") {
+        if let Some(video_path) = args.get(pos + 1) {
+            return run_video_test(video_path, 10);
+        }
+    }
+    if let Some(pos) = args.iter().position(|arg| arg == "--import") {
+        if let Some(file_path) = args.get(pos + 1) {
+            return run_cli_import(file_path);
+        }
+    }
+    if args.iter().any(|arg| arg == "--metrics") {
+        return run_cli_metrics();
+    }
+    if args.iter().any(|arg| arg == "--pause") {
+        return run_cli_pause(true);
+    }
+    if args.iter().any(|arg| arg == "--resume") {
+        return run_cli_pause(false);
+    }
 
-    // Default: run selftest for 10 seconds if run interactively, or help
-    println!("wallmus - Desktop Live Wallpaper Engine");
-    println!("Usage:");
-    println!("  wallmus.exe --diag            Print diagnostic report & save diag_report.json");
-    println!("  wallmus.exe --selftest        Run 10-second GDI pattern desktop attachment self-test");
-    println!("  wallmus.exe --image <path>    Run 10-second WIC static image wallpaper test");
-    println!("  wallmus.exe --video <path>    Run 10-second libmpv video wallpaper test");
-    println!("Running --selftest by default...");
-    run_selftest(10)
+    // 3. Single Instance Guard
+    let single_instance = SingleInstanceGuard::acquire("Local\\wallmus_SingleInstanceMutex")
+        .context("Failed to evaluate single instance mutex")?;
+
+    if !single_instance.is_primary() {
+        println!("wallmus is already running in the background.");
+        println!("Focusing running application...");
+        let _ = send_request("app.openUi", serde_json::Value::Null);
+        return Ok(());
+    }
+
+    // 4. Primary daemon execution
+    run_daemon()
+}
+
+fn run_daemon() -> Result<()> {
+    info!("Starting wallmus daemon (Stage 1)...");
+
+    // Apply process profile: Below Normal priority + EcoQoS
+    if let Err(e) = apply_eco_profile() {
+        warn!("Could not apply eco process profile: {e}");
+    }
+
+    let config = Arc::new(Mutex::new(AppConfig::load()));
+    let db = Arc::new(Database::open_default().context("Failed to open SQLite database")?);
+
+    // Get active wallpaper or use first in database
+    let wallpapers = db.list_wallpapers().unwrap_or_default();
+    let initial_wp = wallpapers.first().cloned();
+    let active_wallpaper = Arc::new(Mutex::new(initial_wp));
+
+    let should_quit = Arc::new(AtomicBool::new(false));
+
+    // Create Desktop Host Windows for active monitors FIRST (before installing hooks or tray)
+    let monitors = enumerate_monitors().context("Failed to enumerate monitors")?;
+    let mut hosts = Vec::new();
+    let mut renderers: Vec<Box<dyn Renderer>> = Vec::new();
+
+    let our_pid = std::process::id();
+
+    for monitor in &monitors {
+        let mut host = DesktopHostWindow::create(monitor.clone(), RenderMode::Video)
+            .context("Failed to create DesktopHostWindow")?;
+
+        let active_wp_guard = active_wallpaper.lock().unwrap();
+        if let Some(ref wp) = *active_wp_guard {
+            match wp.kind.as_str() {
+                "video" => {
+                    if let Ok(mut mpv) =
+                        MpvRenderer::new(host.hwnd.0 as usize, monitor.width, monitor.height)
+                    {
+                        let _ = mpv.load(&wp.processed_path);
+                        renderers.push(Box::new(mpv));
+                    }
+                }
+                _ => {
+                    let mut img_rend =
+                        StaticImageRenderer::new(host.hwnd, monitor.width, monitor.height);
+                    let _ = img_rend.load(&wp.processed_path);
+                    let img_arc = Arc::new(Mutex::new(img_rend));
+                    host.set_paint_callback(move |hdc, _w, _h| {
+                        if let Ok(g) = img_arc.lock() {
+                            g.paint(hdc);
+                        }
+                    });
+                }
+            }
+        }
+        hosts.push(host);
+    }
+
+    // Initialize Governor
+    let gov_config = config.lock().unwrap().governor.clone();
+    let mut governor = Governor::new(gov_config);
+    if let Err(e) = governor.start_hooks() {
+        warn!("Governor hooks could not be started: {e}");
+    }
+    let governor_arc = Arc::new(Mutex::new(governor));
+
+    let ctx = Arc::new(DaemonContext {
+        db: db.clone(),
+        config: config.clone(),
+        governor: governor_arc.clone(),
+        active_wallpaper: active_wallpaper.clone(),
+        should_quit: should_quit.clone(),
+    });
+
+    // Start IPC Server
+    let ipc_server = IpcServer::start(ctx.clone()).context("Failed to start IPC server")?;
+    info!("IPC server listening on {}", ipc::PIPE_NAME);
+
+    // Create System Tray
+    let tray = SystemTray::create(false).context("Failed to create system tray")?;
+    info!("System tray initialized");
+
+    info!("wallmus daemon running. Entering main event loop...");
+
+    let mut last_gov_check = Instant::now();
+    let mut last_state = GovernorState::Running;
+
+    unsafe {
+        let mut msg = MSG::default();
+
+        while !should_quit.load(Ordering::SeqCst) {
+            // Process Win32 messages
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                if msg.message == WM_QUIT {
+                    should_quit.store(true, Ordering::SeqCst);
+                    break;
+                }
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+
+            // Process Tray Events
+            if let Ok(event) = muda::MenuEvent::receiver().try_recv() {
+                if event.id == tray.quit_id {
+                    info!("Tray: Quit clicked");
+                    should_quit.store(true, Ordering::SeqCst);
+                    break;
+                } else if event.id == tray.open_ui_id {
+                    info!("Tray: Open UI clicked");
+                } else if event.id == tray.pause_id {
+                    let gov = governor_arc.lock().unwrap();
+                    let current = gov.is_manual_paused();
+                    gov.set_manual_pause(!current);
+                    tray.update_state(!current);
+                    info!("Tray: Toggle pause -> {}", !current);
+                } else if event.id == tray.diag_id {
+                    info!("Tray: Dump diagnostics requested");
+                    let _ = run_diag();
+                } else if event.id == tray.next_id {
+                    info!("Tray: Next wallpaper clicked");
+                    // Switch to next wallpaper in library
+                    let list = db.list_wallpapers().unwrap_or_default();
+                    if list.len() > 1 {
+                        let mut active = active_wallpaper.lock().unwrap();
+                        let next = list
+                            .iter()
+                            .find(|w| active.as_ref().map(|a| a.id != w.id).unwrap_or(true))
+                            .cloned();
+                        if let Some(next_wp) = next {
+                            info!("Switching wallpaper to: {}", next_wp.name);
+                            for r in &mut renderers {
+                                let _ = r.load(&next_wp.processed_path);
+                            }
+                            *active = Some(next_wp);
+                        }
+                    }
+                }
+            }
+
+            // Periodic Governor evaluation (every 1 second or on WinEvent)
+            let gov_triggered = {
+                let gov = governor_arc.lock().unwrap();
+                gov.take_event_trigger()
+            };
+
+            if gov_triggered || last_gov_check.elapsed() >= Duration::from_millis(1000) {
+                last_gov_check = Instant::now();
+
+                if let Some(primary_mon) = monitors.first() {
+                    let current_gov_state = {
+                        let gov = governor_arc.lock().unwrap();
+                        gov.evaluate_monitor(primary_mon, our_pid)
+                    };
+
+                    if current_gov_state != last_state {
+                        info!("Governor state changed: {:?} -> {:?}", last_state, current_gov_state);
+                        match &current_gov_state {
+                            GovernorState::Paused(reason) => {
+                                for r in &mut renderers {
+                                    let _ = r.pause();
+                                }
+                                tray.update_state(true);
+                                info!("Paused rendering due to: {:?}", reason);
+                            }
+                            GovernorState::Running => {
+                                for r in &mut renderers {
+                                    let _ = r.resume();
+                                }
+                                tray.update_state(false);
+                                info!("Resumed rendering");
+                            }
+                            GovernorState::Unloaded => {
+                                for r in &mut renderers {
+                                    let _ = r.unload();
+                                }
+                                info!("Unloaded renderers");
+                            }
+                        }
+                        last_state = current_gov_state;
+                    }
+                }
+            }
+
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    info!("Shutting down wallmus daemon...");
+    ipc_server.stop();
+    drop(renderers);
+    drop(hosts);
+    info!("Clean shutdown complete.");
+
+    Ok(())
+}
+
+fn run_cli_import(file_path: &str) -> Result<()> {
+    let path = Path::new(file_path);
+    println!("Importing wallpaper: {}", path.display());
+    let item = import_wallpaper(path, true)?;
+    let db = Database::open_default()?;
+    db.save_wallpaper(&item)?;
+    println!("Successfully imported wallpaper!");
+    println!("  ID   : {}", item.id);
+    println!("  Name : {}", item.name);
+    println!("  Kind : {}", item.kind);
+    println!("  Thumb: {}", item.thumb_path);
+    println!("  File : {}", item.processed_path);
+    Ok(())
+}
+
+fn run_cli_metrics() -> Result<()> {
+    match send_request("app.getState", serde_json::Value::Null) {
+        Ok(resp) => {
+            if resp.ok {
+                println!("wallmus Daemon Metrics:");
+                println!("{}", serde_json::to_string_pretty(&resp.result)?);
+            } else {
+                eprintln!("Error from daemon: {:?}", resp.error);
+            }
+        }
+        Err(e) => {
+            eprintln!("Daemon is not running ({e}). Collecting offline diagnostics...");
+            run_diag()?;
+        }
+    }
+    Ok(())
+}
+
+fn run_cli_pause(pause: bool) -> Result<()> {
+    let method = if pause { "wallpapers.pause" } else { "wallpapers.resume" };
+    println!("Sending {} command to daemon...", method);
+    let resp = send_request(method, serde_json::Value::Null)?;
+    println!("Daemon response: {:?}", resp);
+    Ok(())
 }
 
 fn run_diag() -> Result<()> {
@@ -89,21 +465,11 @@ fn run_diag() -> Result<()> {
             i, m.name, m.is_primary, m.x, m.y, m.x + m.width, m.y + m.height, m.width, m.height, m.dpi_x, m.dpi_y, m.scale_factor
         );
     }
-
-    println!("\nShell Windows Tree ({}):", diag.shell_windows.len());
-    for w in &diag.shell_windows {
-        println!(
-            "  HWND: 0x{:08X} | Parent: 0x{:08X} | Class: {:<18} | Visible: {:<5} | Rect: {:?}",
-            w.hwnd, w.parent_hwnd, w.class_name, w.is_visible, w.rect
-        );
-    }
     println!("============================================================");
 
-    // Save to JSON
-    let json_data = serde_json::to_string_pretty(&diag).context("Failed to serialize diag to JSON")?;
-    let mut file = File::create("diag_report.json").context("Failed to create diag_report.json")?;
-    file.write_all(json_data.as_bytes())
-        .context("Failed to write diag_report.json")?;
+    let json_data = serde_json::to_string_pretty(&diag)?;
+    let mut file = File::create("diag_report.json")?;
+    file.write_all(json_data.as_bytes())?;
     info!("Diagnostics saved to diag_report.json");
 
     Ok(())
@@ -114,33 +480,23 @@ fn run_selftest(duration_secs: u64) -> Result<()> {
 
     let monitors = enumerate_monitors().context("Failed to enumerate monitors")?;
     if monitors.is_empty() {
-        anyhow::bail!("No active monitors found!");
+        bail!("No active monitors found!");
     }
-
-    info!("Found {} active monitor(s)", monitors.len());
 
     let mut hosts = Vec::new();
     for monitor in monitors {
-        info!(
-            "Creating desktop host window for monitor: {} ({}x{} at {},{})",
-            monitor.name, monitor.width, monitor.height, monitor.x, monitor.y
-        );
-        let host = DesktopHostWindow::create(monitor, RenderMode::GdiPattern)
-            .context("Failed to create DesktopHostWindow")?;
+        let host = DesktopHostWindow::create(monitor, RenderMode::GdiPattern)?;
         hosts.push(host);
     }
 
-    info!("Host windows attached behind desktop icons! Testing Win32 message pump...");
     let start_time = Instant::now();
     let max_duration = Duration::from_secs(duration_secs);
 
     unsafe {
         let mut msg = MSG::default();
         while start_time.elapsed() < max_duration {
-            // Non-blocking peek message to handle redraws, taskbar events, and display changes
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                 if msg.message == WM_QUIT {
-                    info!("Received WM_QUIT during self-test");
                     break;
                 }
                 let _ = TranslateMessage(&msg);
@@ -150,36 +506,20 @@ fn run_selftest(duration_secs: u64) -> Result<()> {
         }
     }
 
-    info!("Self-test duration elapsed. Cleaning up and detaching host windows...");
     drop(hosts);
-    info!("Cleanup complete. Desktop restored to original state.");
-
+    info!("Self-test complete. Desktop restored.");
     Ok(())
 }
 
 fn run_image_test(image_path: &str, duration_secs: u64) -> Result<()> {
-    use render::{Renderer, StaticImageRenderer};
-    use std::sync::{Arc, Mutex};
-
-    info!(
-        "Starting wallmus Stage 0 WIC static image test with: {} ({} seconds)...",
-        image_path, duration_secs
-    );
-
-    let monitors = enumerate_monitors().context("Failed to enumerate monitors")?;
-    if monitors.is_empty() {
-        anyhow::bail!("No active monitors found!");
-    }
-
+    info!("Starting WIC static image test: {}...", image_path);
+    let monitors = enumerate_monitors()?;
     let mut hosts = Vec::new();
-    for monitor in monitors {
-        let mut host = DesktopHostWindow::create(monitor.clone(), RenderMode::StaticImage)
-            .context("Failed to create DesktopHostWindow")?;
 
+    for monitor in monitors {
+        let mut host = DesktopHostWindow::create(monitor.clone(), RenderMode::StaticImage)?;
         let mut renderer = StaticImageRenderer::new(host.hwnd, monitor.width, monitor.height);
-        renderer
-            .load(image_path)
-            .with_context(|| format!("Failed to load static image: {}", image_path))?;
+        renderer.load(image_path)?;
 
         let renderer_arc = Arc::new(Mutex::new(renderer));
         host.set_paint_callback(move |hdc, _w, _h| {
@@ -187,11 +527,9 @@ fn run_image_test(image_path: &str, duration_secs: u64) -> Result<()> {
                 guard.paint(hdc);
             }
         });
-
         hosts.push(host);
     }
 
-    info!("WIC static image attached behind desktop icons! Message pump active...");
     let start_time = Instant::now();
     let max_duration = Duration::from_secs(duration_secs);
 
@@ -200,7 +538,6 @@ fn run_image_test(image_path: &str, duration_secs: u64) -> Result<()> {
         while start_time.elapsed() < max_duration {
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                 if msg.message == WM_QUIT {
-                    info!("Received WM_QUIT during image test");
                     break;
                 }
                 let _ = TranslateMessage(&msg);
@@ -210,44 +547,24 @@ fn run_image_test(image_path: &str, duration_secs: u64) -> Result<()> {
         }
     }
 
-    info!("Image test elapsed. Detaching host windows...");
     drop(hosts);
-    info!("Desktop restored to original state.");
-
     Ok(())
 }
 
 fn run_video_test(video_path: &str, duration_secs: u64) -> Result<()> {
-    use render::{MpvRenderer, Renderer};
-
-    info!(
-        "Starting wallmus Stage 0 libmpv video test with: {} ({} seconds)...",
-        video_path, duration_secs
-    );
-
-    let monitors = enumerate_monitors().context("Failed to enumerate monitors")?;
-    if monitors.is_empty() {
-        anyhow::bail!("No active monitors found!");
-    }
-
+    info!("Starting libmpv video test: {}...", video_path);
+    let monitors = enumerate_monitors()?;
     let mut hosts = Vec::new();
     let mut renderers = Vec::new();
 
     for monitor in monitors {
-        let host = DesktopHostWindow::create(monitor.clone(), RenderMode::Video)
-            .context("Failed to create DesktopHostWindow")?;
-
-        let mut renderer = MpvRenderer::new(host.hwnd.0 as usize, monitor.width, monitor.height)
-            .context("Failed to initialize MpvRenderer")?;
-        renderer
-            .load(video_path)
-            .with_context(|| format!("Failed to load video file: {}", video_path))?;
-
+        let host = DesktopHostWindow::create(monitor.clone(), RenderMode::Video)?;
+        let mut renderer = MpvRenderer::new(host.hwnd.0 as usize, monitor.width, monitor.height)?;
+        renderer.load(video_path)?;
         hosts.push(host);
         renderers.push(renderer);
     }
 
-    info!("libmpv video attached behind desktop icons! Message pump active...");
     let start_time = Instant::now();
     let max_duration = Duration::from_secs(duration_secs);
 
@@ -256,7 +573,6 @@ fn run_video_test(video_path: &str, duration_secs: u64) -> Result<()> {
         while start_time.elapsed() < max_duration {
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                 if msg.message == WM_QUIT {
-                    info!("Received WM_QUIT during video test");
                     break;
                 }
                 let _ = TranslateMessage(&msg);
@@ -266,10 +582,7 @@ fn run_video_test(video_path: &str, duration_secs: u64) -> Result<()> {
         }
     }
 
-    info!("Video test elapsed. Cleaning up renderers and detaching host windows...");
     drop(renderers);
     drop(hosts);
-    info!("Desktop restored to original state.");
-
     Ok(())
 }

@@ -4,6 +4,9 @@ members = [
     "crates/common",
     "crates/desktop-host",
     "crates/render",
+    "crates/library",
+    "crates/media",
+    "crates/governor",
     "crates/daemon",
 ]
 
