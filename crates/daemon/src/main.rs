@@ -5,14 +5,14 @@ mod tray;
 
 use anyhow::{bail, Context, Result};
 use audio_engine::AudioEngine;
-use common::{logs_dir, AppConfig, WallpaperItem};
+use common::{logs_dir, AppConfig, MusicSource, WallpaperItem};
 use widget::WidgetController;
 use desktop_host::{
     apply_eco_profile, collect_diag, enumerate_monitors, DesktopHostWindow, RenderMode,
 };
 use governor::{Governor, GovernorState};
 use ipc::{send_request, IpcHandler, IpcServer};
-use library::Database;
+use library::{Database, LibraryWatcher};
 use media::import_wallpaper;
 use render::{MpvRenderer, Renderer, StaticImageRenderer};
 use single_instance::SingleInstanceGuard;
@@ -26,9 +26,23 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 use tray::SystemTray;
-use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
+use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT,
 };
+use windows::Win32::UI::WindowsAndMessaging::{
+    DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_HOTKEY, WM_QUIT,
+};
+
+const HOTKEY_MEDIA_NEXT: i32 = 1001;
+const HOTKEY_MEDIA_PREV: i32 = 1002;
+const HOTKEY_MEDIA_STOP: i32 = 1003;
+const HOTKEY_MEDIA_PLAY_PAUSE: i32 = 1004;
+
+const VK_MEDIA_NEXT_TRACK: u32 = 0xB0;
+const VK_MEDIA_PREV_TRACK: u32 = 0xB1;
+const VK_MEDIA_STOP: u32 = 0xB2;
+const VK_MEDIA_PLAY_PAUSE: u32 = 0xB3;
 
 /// Daemon runtime controller managing wallpaper playback and IPC.
 struct DaemonContext {
@@ -38,6 +52,7 @@ struct DaemonContext {
     active_wallpaper: Arc<Mutex<Option<WallpaperItem>>>,
     should_quit: Arc<AtomicBool>,
     audio: Arc<AudioEngine>,
+    watcher: Arc<Mutex<Option<LibraryWatcher>>>,
 }
 
 impl IpcHandler for DaemonContext {
@@ -132,38 +147,59 @@ impl IpcHandler for DaemonContext {
                 Ok(serde_json::json!({ "enabled": enabled }))
             }
             "audio.getTrack" => {
-                // Try SMTC first
-                let track = self.audio.smtc.get_current_track()?;
-                if let Some(t) = track {
-                    return Ok(serde_json::to_value(t)?);
+                let source = self.config.lock().unwrap().music.source;
+                match source {
+                    MusicSource::External => {
+                        let track = self.audio.smtc.get_current_track()?;
+                        if let Some(t) = track {
+                            let key = common::normalize::external_track_key(&t.artist, &t.title);
+                            return Ok(serde_json::json!({
+                                "source": "external",
+                                "key": key,
+                                "title": t.title,
+                                "artist": t.artist,
+                                "album_title": t.album_title,
+                                "album_artist": t.album_artist,
+                                "playback_status": format!("{:?}", t.playback_status),
+                                "source_app": t.source_app,
+                                "position_ms": t.position_ms,
+                                "duration_ms": t.duration_ms,
+                                "cover_path": t.cover_path,
+                            }));
+                        }
+                        Ok(serde_json::Value::Null)
+                    }
+                    MusicSource::Local => {
+                        if let Some(local_t) = self.audio.player.current_track() {
+                            let pos_ms = self.audio.player.get_position().as_millis() as u64;
+                            return Ok(serde_json::json!({
+                                "source": "local",
+                                "key": local_t.id,
+                                "title": local_t.title,
+                                "artist": local_t.artist,
+                                "album_title": local_t.album.unwrap_or_default(),
+                                "album_artist": local_t.artist,
+                                "playback_status": if self.audio.player.is_playing() { "Playing" } else { "Paused" },
+                                "source_app": "wallmus",
+                                "position_ms": pos_ms,
+                                "duration_ms": local_t.duration_ms,
+                                "cover_path": local_t.cover_path,
+                            }));
+                        }
+                        Ok(serde_json::Value::Null)
+                    }
                 }
-
-                // Check local player
-                if let Some(local_t) = self.audio.player.current_track() {
-                    return Ok(serde_json::json!({
-                        "title": local_t.title,
-                        "artist": local_t.artist,
-                        "album_title": "",
-                        "album_artist": "",
-                        "playback_status": if self.audio.player.is_playing() { "Playing" } else { "Paused" },
-                        "source_app": "wallmus",
-                        "position_ms": null,
-                        "duration_ms": local_t.duration_ms,
-                        "cover_path": null,
-                    }));
-                }
-
-                Ok(serde_json::Value::Null)
             }
             "audio.control" => {
                 let action = params
                     .get("action")
                     .and_then(|v| v.as_str())
                     .context("Missing 'action' parameter (play/pause/toggle/next/previous)")?;
+                let source = self.config.lock().unwrap().music.source;
 
                 let res = match action {
                     "play" => {
-                        if self.audio.player.is_playing() {
+                        if source == MusicSource::Local {
                             self.audio.player.play();
                             true
                         } else {
@@ -171,7 +207,7 @@ impl IpcHandler for DaemonContext {
                         }
                     }
                     "pause" => {
-                        if self.audio.player.is_playing() {
+                        if source == MusicSource::Local {
                             self.audio.player.pause();
                             true
                         } else {
@@ -179,7 +215,7 @@ impl IpcHandler for DaemonContext {
                         }
                     }
                     "toggle" => {
-                        if self.audio.player.is_playing() {
+                        if source == MusicSource::Local {
                             self.audio.player.toggle_play_pause();
                             true
                         } else {
@@ -187,7 +223,7 @@ impl IpcHandler for DaemonContext {
                         }
                     }
                     "next" => {
-                        if self.audio.player.is_playing() {
+                        if source == MusicSource::Local {
                             let _ = self.audio.player.next();
                             true
                         } else {
@@ -195,7 +231,7 @@ impl IpcHandler for DaemonContext {
                         }
                     }
                     "previous" => {
-                        if self.audio.player.is_playing() {
+                        if source == MusicSource::Local {
                             let _ = self.audio.player.previous();
                             true
                         } else {
@@ -233,6 +269,133 @@ impl IpcHandler for DaemonContext {
                     "muted": self.audio.wallpaper_audio.is_muted(),
                 }))
             }
+            "library.scan" => {
+                let folders = if let Some(arr) = params.get("folders").and_then(|v| v.as_array()) {
+                    arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+                } else {
+                    self.config.lock().unwrap().music.folders.clone()
+                };
+                let summary = library::scanner::scan_folders(&self.db, &folders, None::<fn(library::ScanProgress)>)?;
+                Ok(serde_json::to_value(summary)?)
+            }
+            "library.listTracks" => {
+                let tracks = self.db.list_tracks()?;
+                Ok(serde_json::to_value(tracks)?)
+            }
+            "library.getTrack" => {
+                let id = params.get("id").and_then(|v| v.as_str()).context("Missing 'id'")?;
+                let track = self.db.get_track(id)?;
+                Ok(serde_json::to_value(track)?)
+            }
+            "library.listPlaylists" => {
+                let pls = self.db.list_playlists()?;
+                Ok(serde_json::to_value(pls)?)
+            }
+            "library.createPlaylist" => {
+                let name = params.get("name").and_then(|v| v.as_str()).context("Missing 'name'")?;
+                let id = self.db.create_playlist(name)?;
+                Ok(serde_json::json!({ "id": id }))
+            }
+            "library.updatePlaylist" => {
+                let id = params.get("id").and_then(|v| v.as_i64()).context("Missing 'id'")?;
+                let name = params.get("name").and_then(|v| v.as_str()).context("Missing 'name'")?;
+                let track_ids: Vec<String> = params
+                    .get("track_ids")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                self.db.update_playlist(id, name, &track_ids)?;
+                Ok(serde_json::json!({ "status": "ok" }))
+            }
+            "library.deletePlaylist" => {
+                let id = params.get("id").and_then(|v| v.as_i64()).context("Missing 'id'")?;
+                self.db.delete_playlist(id)?;
+                Ok(serde_json::json!({ "status": "ok" }))
+            }
+            "library.getFolders" => {
+                let folders = self.config.lock().unwrap().music.folders.clone();
+                Ok(serde_json::json!({ "folders": folders }))
+            }
+            "library.setFolders" => {
+                let folders: Vec<String> = params
+                    .get("folders")
+                    .and_then(|v| v.as_array())
+                    .context("Missing 'folders' array")?
+                    .iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect();
+                {
+                    let mut cfg = self.config.lock().unwrap();
+                    cfg.music.folders = folders.clone();
+                    let _ = cfg.save();
+                }
+                if let Ok(mut guard) = self.watcher.lock() {
+                    if let Some(ref mut w) = *guard {
+                        let _ = w.update_folders(&folders);
+                    }
+                }
+                Ok(serde_json::json!({ "folders": folders }))
+            }
+            "player.play" => {
+                self.audio.player.play();
+                Ok(serde_json::json!({ "is_playing": self.audio.player.is_playing() }))
+            }
+            "player.pause" => {
+                self.audio.player.pause();
+                Ok(serde_json::json!({ "is_playing": false }))
+            }
+            "player.toggle" => {
+                self.audio.player.toggle_play_pause();
+                Ok(serde_json::json!({ "is_playing": self.audio.player.is_playing() }))
+            }
+            "player.next" => {
+                self.audio.player.next()?;
+                Ok(serde_json::json!({ "current_track": self.audio.player.current_track() }))
+            }
+            "player.prev" => {
+                self.audio.player.previous()?;
+                Ok(serde_json::json!({ "current_track": self.audio.player.current_track() }))
+            }
+            "player.seek" => {
+                let pos_ms = params.get("position_ms").and_then(|v| v.as_u64()).context("Missing 'position_ms'")?;
+                self.audio.player.seek(Duration::from_millis(pos_ms))?;
+                Ok(serde_json::json!({ "position_ms": pos_ms }))
+            }
+            "player.setVolume" => {
+                let vol = params.get("volume").and_then(|v| v.as_f64()).context("Missing 'volume'")? as f32;
+                self.audio.player.set_volume(vol);
+                Ok(serde_json::json!({ "volume": self.audio.player.get_volume() }))
+            }
+            "player.setRepeat" => {
+                let mode_str = params.get("mode").and_then(|v| v.as_str()).context("Missing 'mode'")?;
+                let mode = match mode_str {
+                    "all" => audio_engine::RepeatMode::All,
+                    "one" => audio_engine::RepeatMode::One,
+                    _ => audio_engine::RepeatMode::Off,
+                };
+                self.audio.player.set_repeat_mode(mode);
+                Ok(serde_json::json!({ "repeat_mode": mode_str }))
+            }
+            "player.setShuffle" => {
+                let shuffle = params.get("shuffle").and_then(|v| v.as_bool()).context("Missing 'shuffle'")?;
+                self.audio.player.set_shuffle(shuffle);
+                Ok(serde_json::json!({ "shuffle": shuffle }))
+            }
+            "player.setQueue" => {
+                let tracks: Vec<audio_engine::LocalTrack> = serde_json::from_value(
+                    params.get("tracks").cloned().context("Missing 'tracks' array")?,
+                )?;
+                let start_idx = params.get("start_index").and_then(|v| v.as_u64()).map(|u| u as usize);
+                self.audio.player.set_queue(tracks, start_idx)?;
+                Ok(serde_json::json!({ "status": "ok" }))
+            }
+            "player.enqueue" => {
+                let track: audio_engine::LocalTrack = serde_json::from_value(
+                    params.get("track").cloned().context("Missing 'track'")?,
+                )?;
+                self.audio.player.enqueue(track);
+                Ok(serde_json::json!({ "status": "ok" }))
+            }
             "player.playFile" => {
                 let path = params
                     .get("path")
@@ -253,13 +416,26 @@ impl IpcHandler for DaemonContext {
                 Ok(serde_json::json!({ "status": "playing" }))
             }
             "player.getState" => {
-                Ok(serde_json::json!({
-                    "is_playing": self.audio.player.is_playing(),
-                    "volume": self.audio.player.get_volume(),
-                    "repeat_mode": format!("{:?}", self.audio.player.get_repeat_mode()),
-                    "shuffle": self.audio.player.is_shuffle(),
-                    "current_track": self.audio.player.current_track(),
-                }))
+                let state = self.audio.player.get_state();
+                Ok(serde_json::to_value(state)?)
+            }
+            "settings.getMusic" => {
+                let cfg = self.config.lock().unwrap();
+                Ok(serde_json::to_value(&cfg.music)?)
+            }
+            "settings.setMusic" => {
+                let mut cfg = self.config.lock().unwrap();
+                if let Some(src_str) = params.get("source").and_then(|v| v.as_str()) {
+                    cfg.music.source = match src_str {
+                        "external" => MusicSource::External,
+                        _ => MusicSource::Local,
+                    };
+                }
+                if let Some(folders) = params.get("folders").and_then(|v| v.as_array()) {
+                    cfg.music.folders = folders.iter().filter_map(|x| x.as_str().map(String::from)).collect();
+                }
+                let _ = cfg.save();
+                Ok(serde_json::to_value(&cfg.music)?)
             }
             "widget.getState" => {
                 let cfg = self.config.lock().unwrap();
@@ -460,6 +636,33 @@ fn run_daemon() -> Result<()> {
     let governor_arc = Arc::new(Mutex::new(governor));
     let audio = Arc::new(AudioEngine::new());
 
+    // Restore player state from DB KV store if present
+    if let Ok(Some(saved_state_json)) = db.get_kv("player_state") {
+        if let Ok(saved_state) = serde_json::from_str(&saved_state_json) {
+            audio.player.load_state(saved_state);
+            info!("Restored audio player state from previous session");
+        }
+    }
+
+    // Auto-save player state on track changed
+    let db_for_player = db.clone();
+    let player_for_cb = audio.player.clone();
+    audio.player.set_on_track_changed(move |track| {
+        info!("Track changed: {} - {}", track.artist, track.title);
+        let state = player_for_cb.get_state();
+        if let Ok(json) = serde_json::to_string(&state) {
+            let _ = db_for_player.set_kv("player_state", &json);
+        }
+    });
+
+    // Initialize LibraryWatcher for monitored music folders
+    let mut watcher = LibraryWatcher::new(db.clone()).ok();
+    if let Some(ref mut w) = watcher {
+        let folders = config.lock().unwrap().music.folders.clone();
+        let _ = w.update_folders(&folders);
+    }
+    let watcher_arc = Arc::new(Mutex::new(watcher));
+
     let ctx = Arc::new(DaemonContext {
         db: db.clone(),
         config: config.clone(),
@@ -467,11 +670,20 @@ fn run_daemon() -> Result<()> {
         active_wallpaper: active_wallpaper.clone(),
         should_quit: should_quit.clone(),
         audio: audio.clone(),
+        watcher: watcher_arc.clone(),
     });
 
     // Start IPC Server
     let ipc_server = IpcServer::start(ctx.clone()).context("Failed to start IPC server")?;
     info!("IPC server listening on {}", ipc::PIPE_NAME);
+
+    // Register global media hotkeys (VK_MEDIA_*)
+    unsafe {
+        let _ = RegisterHotKey(HWND::default(), HOTKEY_MEDIA_NEXT, MOD_NOREPEAT, VK_MEDIA_NEXT_TRACK);
+        let _ = RegisterHotKey(HWND::default(), HOTKEY_MEDIA_PREV, MOD_NOREPEAT, VK_MEDIA_PREV_TRACK);
+        let _ = RegisterHotKey(HWND::default(), HOTKEY_MEDIA_STOP, MOD_NOREPEAT, VK_MEDIA_STOP);
+        let _ = RegisterHotKey(HWND::default(), HOTKEY_MEDIA_PLAY_PAUSE, MOD_NOREPEAT, VK_MEDIA_PLAY_PAUSE);
+    }
 
     // Create System Tray
     let tray = SystemTray::create(false).context("Failed to create system tray")?;
@@ -546,6 +758,40 @@ fn run_daemon() -> Result<()> {
                 if msg.message == WM_QUIT {
                     should_quit.store(true, Ordering::SeqCst);
                     break;
+                } else if msg.message == WM_HOTKEY {
+                    let id = msg.wParam.0 as i32;
+                    let source = config.lock().unwrap().music.source;
+                    match id {
+                        HOTKEY_MEDIA_PLAY_PAUSE => {
+                            if source == MusicSource::Local {
+                                audio.player.toggle_play_pause();
+                            } else {
+                                let _ = audio.smtc.toggle_play_pause();
+                            }
+                        }
+                        HOTKEY_MEDIA_NEXT => {
+                            if source == MusicSource::Local {
+                                let _ = audio.player.next();
+                            } else {
+                                let _ = audio.smtc.skip_next();
+                            }
+                        }
+                        HOTKEY_MEDIA_PREV => {
+                            if source == MusicSource::Local {
+                                let _ = audio.player.previous();
+                            } else {
+                                let _ = audio.smtc.skip_previous();
+                            }
+                        }
+                        HOTKEY_MEDIA_STOP => {
+                            if source == MusicSource::Local {
+                                audio.player.stop();
+                            } else {
+                                let _ = audio.smtc.pause();
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
@@ -647,6 +893,19 @@ fn run_daemon() -> Result<()> {
 
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    unsafe {
+        let _ = UnregisterHotKey(HWND::default(), HOTKEY_MEDIA_NEXT);
+        let _ = UnregisterHotKey(HWND::default(), HOTKEY_MEDIA_PREV);
+        let _ = UnregisterHotKey(HWND::default(), HOTKEY_MEDIA_STOP);
+        let _ = UnregisterHotKey(HWND::default(), HOTKEY_MEDIA_PLAY_PAUSE);
+    }
+
+    // Save final player state to DB KV
+    let state = audio.player.get_state();
+    if let Ok(json) = serde_json::to_string(&state) {
+        let _ = db.set_kv("player_state", &json);
     }
 
     info!("Shutting down wallmus daemon...");
