@@ -12,9 +12,10 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, PostQuitMessage,
-    RegisterClassExW, RegisterWindowMessageW, SetWindowLongPtrW, CS_HREDRAW, CS_VREDRAW,
-    GWLP_USERDATA, WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_PAINT,
-    WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+    RegisterClassExW, RegisterWindowMessageW, SetLayeredWindowAttributes, SetWindowLongPtrW,
+    SetWindowPos, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, GWL_EXSTYLE, LWA_ALPHA, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND,
+    WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 static CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
@@ -52,6 +53,11 @@ impl DesktopHostWindow {
         self.paint_callback = Some(Box::new(callback));
     }
 
+    /// Clear custom painter.
+    pub fn clear_paint_callback(&mut self) {
+        self.paint_callback = None;
+    }
+
     /// Create a new desktop host window for a specific monitor.
     pub fn create(monitor: MonitorInfo, render_mode: RenderMode) -> Result<Box<Self>> {
         crate::topology::ensure_default_desktop();
@@ -65,10 +71,10 @@ impl DesktopHostWindow {
             RegisterWindowMessageW(w!("TaskbarCreated"))
         };
 
-        // Create window borderless and no-activate
+        // Create window borderless and no-activate with layered window support for crossfade
         let hwnd = unsafe {
             CreateWindowExW(
-                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
                 CLASS_NAME,
                 w!("wallmus Host Window"),
                 WS_POPUP,
@@ -86,6 +92,11 @@ impl DesktopHostWindow {
 
         if hwnd.0 as usize == 0 {
             bail!("CreateWindowExW returned null HWND for monitor: {}", monitor.name);
+        }
+
+        // Initialize opacity to full (255)
+        unsafe {
+            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
         }
 
         let mut host = Box::new(Self {
@@ -113,6 +124,36 @@ impl DesktopHostWindow {
         );
 
         Ok(host)
+    }
+
+    /// Set window opacity (0 = transparent, 255 = fully opaque) for crossfade.
+    pub fn set_alpha(&self, alpha: u8) -> Result<()> {
+        unsafe {
+            let ex_style = GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE);
+            if (ex_style as u32 & WS_EX_LAYERED.0) == 0 {
+                SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, ex_style | WS_EX_LAYERED.0 as isize);
+            }
+            SetLayeredWindowAttributes(self.hwnd, COLORREF(0), alpha, LWA_ALPHA)
+                .context("SetLayeredWindowAttributes failed")?;
+        }
+        Ok(())
+    }
+
+    /// Bring this host window directly above another host window in Z-order.
+    pub fn bring_above(&self, other_hwnd: HWND) -> Result<()> {
+        unsafe {
+            SetWindowPos(
+                self.hwnd,
+                other_hwnd,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            )
+            .context("SetWindowPos failed")?;
+        }
+        Ok(())
     }
 
     /// Revalidate attachment when desktop shell or monitors reconfigure.

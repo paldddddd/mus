@@ -101,6 +101,12 @@ pub struct AppConfig {
     pub widget: WidgetConfig,
     #[serde(default)]
     pub music: MusicConfig,
+    #[serde(default = "default_crossfade_duration")]
+    pub crossfade_duration_ms: u64,
+}
+
+fn default_crossfade_duration() -> u64 {
+    500
 }
 
 impl Default for AppConfig {
@@ -112,6 +118,7 @@ impl Default for AppConfig {
             follow_music: true,
             active_wallpaper_id: None,
             fps_limit: 30,
+            crossfade_duration_ms: default_crossfade_duration(),
             governor: GovernorConfig::default(),
             widget: WidgetConfig::default(),
             music: MusicConfig::default(),

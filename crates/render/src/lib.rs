@@ -1,5 +1,6 @@
 //! Render abstraction and implementations for static images and video live wallpapers.
 
+pub mod crossfade;
 pub mod mpv;
 pub mod static_image;
 
@@ -23,5 +24,6 @@ pub trait Renderer: Send {
     fn unload(&mut self) -> Result<()>;
 }
 
+pub use crossfade::{ActiveLayer, DualLayerHost};
 pub use mpv::{get_mpv_version, MpvRenderer};
 pub use static_image::StaticImageRenderer;

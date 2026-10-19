@@ -14,7 +14,7 @@ use governor::{Governor, GovernorState};
 use ipc::{send_request, IpcHandler, IpcServer};
 use library::{resolve, Database, LibraryWatcher, TrackContext};
 use media::import_wallpaper;
-use render::{MpvRenderer, Renderer, StaticImageRenderer};
+use render::{DualLayerHost, MpvRenderer, Renderer, StaticImageRenderer};
 use single_instance::SingleInstanceGuard;
 use std::env;
 use std::fs::File;
@@ -773,40 +773,19 @@ fn run_daemon() -> Result<()> {
 
     let should_quit = Arc::new(AtomicBool::new(false));
 
-    // Create Desktop Host Windows for active monitors FIRST (before installing hooks or tray)
+    // Create DualLayerHost for active monitors supporting smooth crossfade
     let monitors = enumerate_monitors().context("Failed to enumerate monitors")?;
     let mut hosts = Vec::new();
-    let mut renderers: Vec<Box<dyn Renderer>> = Vec::new();
 
     let our_pid = std::process::id();
 
     for monitor in &monitors {
-        let mut host = DesktopHostWindow::create(monitor.clone(), RenderMode::Video)
-            .context("Failed to create DesktopHostWindow")?;
+        let mut host = DualLayerHost::new(monitor.clone())
+            .context("Failed to create DualLayerHost")?;
 
         let active_wp_guard = active_wallpaper.lock().unwrap();
         if let Some(ref wp) = *active_wp_guard {
-            match wp.kind.as_str() {
-                "video" => {
-                    if let Ok(mut mpv) =
-                        MpvRenderer::new(host.hwnd.0 as usize, monitor.width, monitor.height)
-                    {
-                        let _ = mpv.load(&wp.processed_path);
-                        renderers.push(Box::new(mpv));
-                    }
-                }
-                _ => {
-                    let mut img_rend =
-                        StaticImageRenderer::new(host.hwnd, monitor.width, monitor.height);
-                    let _ = img_rend.load(&wp.processed_path);
-                    let img_arc = Arc::new(Mutex::new(img_rend));
-                    host.set_paint_callback(move |hdc, _w, _h| {
-                        if let Ok(g) = img_arc.lock() {
-                            g.paint(hdc);
-                        }
-                    });
-                }
-            }
+            let _ = host.load_initial(wp);
         }
         hosts.push(host);
     }
@@ -1028,9 +1007,6 @@ fn run_daemon() -> Result<()> {
                             .cloned();
                         if let Some(next_wp) = next {
                             info!("Switching wallpaper to: {}", next_wp.name);
-                            for r in &mut renderers {
-                                let _ = r.load(&next_wp.processed_path);
-                            }
                             *active = Some(next_wp);
                         }
                     }
@@ -1056,8 +1032,8 @@ fn run_daemon() -> Result<()> {
                         info!("Governor state changed: {:?} -> {:?}", last_state, current_gov_state);
                         match &current_gov_state {
                             GovernorState::Paused(reason) => {
-                                for r in &mut renderers {
-                                    let _ = r.pause();
+                                for h in &mut hosts {
+                                    let _ = h.pause();
                                 }
                                 audio.visualizer.set_paused(true);
                                 audio.wallpaper_audio.fade_out();
@@ -1065,8 +1041,8 @@ fn run_daemon() -> Result<()> {
                                 info!("Paused rendering due to: {:?}", reason);
                             }
                             GovernorState::Running => {
-                                for r in &mut renderers {
-                                    let _ = r.resume();
+                                for h in &mut hosts {
+                                    let _ = h.resume();
                                 }
                                 audio.visualizer.set_paused(false);
                                 audio.wallpaper_audio.fade_in();
@@ -1074,8 +1050,8 @@ fn run_daemon() -> Result<()> {
                                 info!("Resumed rendering");
                             }
                             GovernorState::Unloaded => {
-                                for r in &mut renderers {
-                                    let _ = r.unload();
+                                for h in &mut hosts {
+                                    let _ = h.unload();
                                 }
                                 audio.visualizer.set_paused(true);
                                 audio.wallpaper_audio.fade_out();
@@ -1178,23 +1154,29 @@ fn run_daemon() -> Result<()> {
                 }
             }
 
-            // Sync active wallpaper to renderers
+            // Sync active wallpaper to hosts with smooth crossfade
             let current_target = active_wallpaper.lock().unwrap().clone();
             if current_target.as_ref().map(|w| &w.id) != current_wallpaper_id.as_ref() {
                 if let Some(ref wp) = current_target {
-                    info!("Syncing active wallpaper '{}' to {} renderers", wp.name, renderers.len());
-                    for (i, r) in renderers.iter_mut().enumerate() {
-                        if let Err(e) = r.load(&wp.processed_path) {
-                            warn!("Failed to load wallpaper on renderer {i}: {e}");
+                    let crossfade_ms = config.lock().unwrap().crossfade_duration_ms;
+                    info!("Transitioning active wallpaper '{}' on {} hosts (crossfade: {} ms)", wp.name, hosts.len(), crossfade_ms);
+                    for h in &mut hosts {
+                        if let Err(e) = h.start_transition(wp, crossfade_ms) {
+                            warn!("Failed to start transition on host {}: {e}", h.monitor.name);
                         }
                     }
                     current_wallpaper_id = Some(wp.id.clone());
                 } else {
-                    for r in &mut renderers {
-                        let _ = r.unload();
+                    for h in &mut hosts {
+                        let _ = h.unload();
                     }
                     current_wallpaper_id = None;
                 }
+            }
+
+            // Update crossfade animation step for all hosts
+            for h in &mut hosts {
+                h.update();
             }
 
             // Update widget window frame
@@ -1222,7 +1204,6 @@ fn run_daemon() -> Result<()> {
 
     info!("Shutting down wallmus daemon...");
     ipc_server.stop();
-    drop(renderers);
     drop(hosts);
     info!("Clean shutdown complete.");
 

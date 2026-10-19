@@ -8,8 +8,8 @@ use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowExW, GetParent, GetWindowLongW, IsWindow, SetParent, SetWindowLongW, SetWindowPos,
     GWL_EXSTYLE, GWL_STYLE, HWND_BOTTOM, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_SHOWWINDOW, WS_CHILD, WS_CLIPSIBLINGS, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
-    WS_VISIBLE,
+    SWP_SHOWWINDOW, WS_CHILD, WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_POPUP, WS_VISIBLE,
 };
 
 /// Handle representing an attached desktop host window.
@@ -126,8 +126,8 @@ fn apply_attachment(
             (handle.original_style & !WS_POPUP.0) | WS_CHILD.0 | WS_CLIPSIBLINGS.0 | WS_VISIBLE.0;
         SetWindowLongW(hwnd, GWL_STYLE, new_style as i32);
 
-        // Extended styles: tool window, no activate
-        let new_ex_style = WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0;
+        // Extended styles: tool window, no activate, layered
+        let new_ex_style = WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0 | WS_EX_LAYERED.0;
         SetWindowLongW(hwnd, GWL_EXSTYLE, new_ex_style as i32);
 
         // Set parent to shell container
