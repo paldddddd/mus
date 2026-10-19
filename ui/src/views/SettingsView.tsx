@@ -9,9 +9,13 @@ import {
   RotateCcw,
   Check,
   AlertCircle,
+  Activity,
+  BarChart2,
+  Waves,
+  Sparkles,
 } from 'lucide-react';
 import { Language, translations } from '../i18n';
-import { HotkeysConfig } from '../types';
+import { HotkeysConfig, WallpaperVisualizerConfig } from '../types';
 import { requestDaemon } from '../api/ipc';
 
 interface SettingsViewProps {
@@ -49,6 +53,38 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [recordingAction, setRecordingAction] = useState<keyof HotkeysConfig | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  const [visualizer, setVisualizer] = useState<WallpaperVisualizerConfig>({
+    enabled: true,
+    style: 'bars',
+    bars_count: 48,
+    height_px: 160,
+    opacity: 0.85,
+    accent_color: 'spotify',
+  });
+
+  const fetchVisualizer = useCallback(async () => {
+    try {
+      const resp = await requestDaemon<WallpaperVisualizerConfig>('visualizer.getConfig');
+      if (resp) {
+        setVisualizer(resp);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch visualizer config:', err);
+    }
+  }, []);
+
+  const handleUpdateVisualizer = async (partial: Partial<WallpaperVisualizerConfig>) => {
+    const updated = { ...visualizer, ...partial };
+    setVisualizer(updated);
+    try {
+      await requestDaemon('visualizer.setConfig', { visualizer: updated });
+      setToastMessage(t.visualizer_saved_toast);
+      setTimeout(() => setToastMessage(null), 2500);
+    } catch (err) {
+      console.error('Failed to save visualizer config:', err);
+    }
+  };
+
   const fetchHotkeys = useCallback(async () => {
     try {
       const resp = await requestDaemon<{ hotkeys: HotkeysConfig; status: Record<string, boolean> }>('hotkeys.get');
@@ -65,7 +101,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   useEffect(() => {
     fetchHotkeys();
-  }, [fetchHotkeys]);
+    fetchVisualizer();
+  }, [fetchHotkeys, fetchVisualizer]);
 
   // Handle global key recording
   useEffect(() => {
@@ -288,6 +325,190 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               );
             })}
           </div>
+        </div>
+
+        {/* Audio Visualizer Layer Section */}
+        <div className="glass-card" style={{ padding: '24px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+              <Activity size={22} color="#06b6d4" />
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '0.98rem' }}>{t.visualizer_title}</div>
+                <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                  {t.visualizer_subtitle}
+                </p>
+              </div>
+            </div>
+            <button
+              className={`btn btn-sm ${visualizer.enabled ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => handleUpdateVisualizer({ enabled: !visualizer.enabled })}
+            >
+              {visualizer.enabled ? (lang === 'ru' ? 'Включен' : 'Enabled') : (lang === 'ru' ? 'Выключен' : 'Disabled')}
+            </button>
+          </div>
+
+          {visualizer.enabled && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '16px', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '18px' }}>
+              {/* Style selector */}
+              <div>
+                <label style={{ fontSize: '0.85rem', fontWeight: 600, display: 'block', marginBottom: '8px', color: 'var(--text-secondary)' }}>
+                  {t.visualizer_style}
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+                  {[
+                    { key: 'bars', label: t.visualizer_style_bars, icon: <BarChart2 size={16} /> },
+                    { key: 'wave', label: t.visualizer_style_wave, icon: <Waves size={16} /> },
+                    { key: 'glow', label: t.visualizer_style_glow, icon: <Sparkles size={16} /> },
+                  ].map((s) => (
+                    <button
+                      key={s.key}
+                      className={`btn btn-sm ${visualizer.style === s.key ? 'btn-primary' : 'btn-secondary'}`}
+                      style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '10px 14px' }}
+                      onClick={() => handleUpdateVisualizer({ style: s.key as 'bars' | 'wave' | 'glow' })}
+                    >
+                      {s.icon}
+                      <span>{s.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Color Palette */}
+              <div>
+                <label style={{ fontSize: '0.85rem', fontWeight: 600, display: 'block', marginBottom: '8px', color: 'var(--text-secondary)' }}>
+                  {t.visualizer_palette}
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
+                  {[
+                    { key: 'spotify', label: t.visualizer_palette_spotify, gradient: 'linear-gradient(135deg, #1DB954, #1ED760)' },
+                    { key: 'cyan_purple', label: t.visualizer_palette_cyan_purple, gradient: 'linear-gradient(135deg, #06B6D4, #8B5CF6)' },
+                    { key: 'neon_blue', label: t.visualizer_palette_neon_blue, gradient: 'linear-gradient(135deg, #2563EB, #38BDF8)' },
+                    { key: 'fire', label: t.visualizer_palette_fire, gradient: 'linear-gradient(135deg, #F59E0B, #EF4444)' },
+                  ].map((p) => {
+                    const isSelected = visualizer.accent_color === p.key;
+                    return (
+                      <button
+                        key={p.key}
+                        onClick={() => handleUpdateVisualizer({ accent_color: p.key as 'spotify' | 'cyan_purple' | 'neon_blue' | 'fire' })}
+                        style={{
+                          background: isSelected ? 'rgba(255, 255, 255, 0.12)' : 'rgba(255, 255, 255, 0.04)',
+                          border: isSelected ? '2px solid var(--accent-color, #06b6d4)' : '1px solid rgba(255, 255, 255, 0.1)',
+                          borderRadius: '8px',
+                          padding: '10px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          gap: '6px',
+                          cursor: 'pointer',
+                          color: '#fff',
+                        }}
+                      >
+                        <div style={{ width: '28px', height: '12px', borderRadius: '4px', background: p.gradient }} />
+                        <span style={{ fontSize: '0.75rem', fontWeight: 500 }}>{p.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Sliders: Bars Count, Height, Opacity */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t.visualizer_bars_count}</span>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>{visualizer.bars_count}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="16"
+                    max="128"
+                    step="8"
+                    value={visualizer.bars_count}
+                    onChange={(e) => handleUpdateVisualizer({ bars_count: parseInt(e.target.value, 10) })}
+                    style={{ width: '100%', accentColor: 'var(--accent-color, #06b6d4)' }}
+                  />
+                </div>
+
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t.visualizer_height}</span>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>{visualizer.height_px} px</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="40"
+                    max="400"
+                    step="10"
+                    value={visualizer.height_px}
+                    onChange={(e) => handleUpdateVisualizer({ height_px: parseInt(e.target.value, 10) })}
+                    style={{ width: '100%', accentColor: 'var(--accent-color, #06b6d4)' }}
+                  />
+                </div>
+
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t.visualizer_opacity}</span>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>{Math.round(visualizer.opacity * 100)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.1"
+                    max="1.0"
+                    step="0.05"
+                    value={visualizer.opacity}
+                    onChange={(e) => handleUpdateVisualizer({ opacity: parseFloat(e.target.value) })}
+                    style={{ width: '100%', accentColor: 'var(--accent-color, #06b6d4)' }}
+                  />
+                </div>
+              </div>
+
+              {/* Mini Visualizer Live Preview */}
+              <div
+                style={{
+                  background: 'rgba(0, 0, 0, 0.35)',
+                  borderRadius: '10px',
+                  padding: '16px 20px',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  display: 'flex',
+                  alignItems: 'flex-end',
+                  justifyContent: 'center',
+                  gap: '4px',
+                  height: '70px',
+                  overflow: 'hidden',
+                  position: 'relative',
+                }}
+              >
+                <div style={{ position: 'absolute', top: '8px', left: '12px', fontSize: '0.7rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Live Preview
+                </div>
+                {Array.from({ length: 32 }).map((_, i) => {
+                  const factor = Math.sin((i / 31) * Math.PI) * 0.8 + 0.2;
+                  const h = Math.max(4, factor * 48);
+                  const gradient =
+                    visualizer.accent_color === 'cyan_purple'
+                      ? 'linear-gradient(to top, #06b6d4, #8b5cf6)'
+                      : visualizer.accent_color === 'neon_blue'
+                      ? 'linear-gradient(to top, #2563eb, #38bdf8)'
+                      : visualizer.accent_color === 'fire'
+                      ? 'linear-gradient(to top, #f59e0b, #ef4444)'
+                      : 'linear-gradient(to top, #1db954, #1ed760)';
+                  return (
+                    <div
+                      key={i}
+                      style={{
+                        width: '6px',
+                        height: visualizer.style === 'glow' ? `${factor * 20 + 4}px` : `${h}px`,
+                        borderRadius: visualizer.style === 'glow' ? '2px' : '3px 3px 0 0',
+                        background: gradient,
+                        opacity: visualizer.opacity,
+                        transition: 'height 0.2s ease',
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Language Selection */}

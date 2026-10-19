@@ -124,6 +124,30 @@ impl Default for HotkeysConfig {
     }
 }
 
+/// Live audio visualizer overlay rendered directly above desktop wallpapers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WallpaperVisualizerConfig {
+    pub enabled: bool,
+    pub style: String, // "bars", "wave", "glow"
+    pub bars_count: u32,
+    pub height_px: u32,
+    pub opacity: f32,
+    pub accent_color: String, // "spotify", "cyan_purple", "neon_blue", "fire"
+}
+
+impl Default for WallpaperVisualizerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            style: "bars".to_string(),
+            bars_count: 48,
+            height_px: 160,
+            opacity: 0.85,
+            accent_color: "spotify".to_string(),
+        }
+    }
+}
+
 /// Global application configuration stored in `%APPDATA%/wallmus/config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -142,6 +166,8 @@ pub struct AppConfig {
     pub crossfade_duration_ms: u64,
     #[serde(default)]
     pub hotkeys: HotkeysConfig,
+    #[serde(default)]
+    pub visualizer: WallpaperVisualizerConfig,
 }
 
 fn default_crossfade_duration() -> u64 {
@@ -162,6 +188,7 @@ impl Default for AppConfig {
             widget: WidgetConfig::default(),
             music: MusicConfig::default(),
             hotkeys: HotkeysConfig::default(),
+            visualizer: WallpaperVisualizerConfig::default(),
         }
     }
 }

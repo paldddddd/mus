@@ -126,6 +126,24 @@ export const translations = {
     widget_theme_pill: 'Капсула (Pill)',
     widget_theme_glass: 'Стекло (Glass)',
     widget_theme_vinyl: 'Винил (Vinyl)',
+
+    // Visualizer Layer Section
+    visualizer_title: 'Аудио-визуализатор на обоях',
+    visualizer_subtitle: 'Анимированный спектральный слой поверх живых обоев, реагирующий на звук в реальном времени.',
+    visualizer_enabled: 'Включить визуализатор на рабочем столе',
+    visualizer_style: 'Стиль визуализации',
+    visualizer_style_bars: 'Эквалайзер (Столбики)',
+    visualizer_style_wave: 'Неоновая волна (Waveform)',
+    visualizer_style_glow: 'Басовый горизонт (Glow)',
+    visualizer_palette: 'Цветовая палитра',
+    visualizer_palette_spotify: 'Spotify (Зелёный)',
+    visualizer_palette_cyan_purple: 'Cyberpunk (Бирюзово-фиолетовый)',
+    visualizer_palette_neon_blue: 'Neon Blue (Королевский синий)',
+    visualizer_palette_fire: 'Flame (Огненный градиент)',
+    visualizer_bars_count: 'Количество полос',
+    visualizer_height: 'Высота слоя',
+    visualizer_opacity: 'Прозрачность слоя',
+    visualizer_saved_toast: 'Параметры визуализатора сохранены!',
   },
   en: {
     // Navigation
@@ -252,5 +270,23 @@ export const translations = {
     widget_theme_pill: 'Capsule (Pill)',
     widget_theme_glass: 'Glassmorphism',
     widget_theme_vinyl: 'Vinyl Record',
+
+    // Visualizer Layer Section
+    visualizer_title: 'Wallpaper Audio Visualizer',
+    visualizer_subtitle: 'Real-time animated audio visualizer layer rendered directly over desktop wallpapers.',
+    visualizer_enabled: 'Enable visualizer on desktop',
+    visualizer_style: 'Visualization Style',
+    visualizer_style_bars: 'Equalizer Bars',
+    visualizer_style_wave: 'Neon Waveform',
+    visualizer_style_glow: 'Horizon Bass Glow',
+    visualizer_palette: 'Color Palette',
+    visualizer_palette_spotify: 'Spotify Neon',
+    visualizer_palette_cyan_purple: 'Cyberpunk Violet',
+    visualizer_palette_neon_blue: 'Neon Blue',
+    visualizer_palette_fire: 'Flame Gradient',
+    visualizer_bars_count: 'Bars Count',
+    visualizer_height: 'Layer Height',
+    visualizer_opacity: 'Layer Opacity',
+    visualizer_saved_toast: 'Wallpaper visualizer settings saved!',
   },
 };

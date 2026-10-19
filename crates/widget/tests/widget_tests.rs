@@ -81,3 +81,32 @@ fn test_themes_geometry_rendering() {
     let painted = surface.pixels.iter().filter(|&&p| p != 0).count();
     assert!(painted > 5000);
 }
+
+#[test]
+fn test_surface_draw_line_bresenham() {
+    let mut surface = ArgbSurface::new(100, 100);
+    let color = ArgbSurface::premul_argb(255, 255, 0, 0);
+
+    // Diagonal line from (10, 10) to (90, 90)
+    surface.draw_line(10.0, 10.0, 90.0, 90.0, color);
+
+    let painted = surface.pixels.iter().filter(|&&p| p == color).count();
+    assert!(painted >= 80, "Diagonal line should paint at least 80 pixels (got {})", painted);
+
+    // Horizontal line
+    surface.clear();
+    surface.draw_line(0.0, 50.0, 99.0, 50.0, color);
+    let painted_h = surface.pixels.iter().filter(|&&p| p == color).count();
+    assert_eq!(painted_h, 100, "Horizontal line across 100px should paint exactly 100 pixels");
+}
+
+#[test]
+fn test_wallpaper_visualizer_config_defaults() {
+    let cfg = common::WallpaperVisualizerConfig::default();
+    assert!(cfg.enabled);
+    assert_eq!(cfg.style, "bars");
+    assert_eq!(cfg.bars_count, 48);
+    assert_eq!(cfg.height_px, 160);
+    assert_eq!(cfg.accent_color, "spotify");
+    assert!(cfg.opacity > 0.0 && cfg.opacity <= 1.0);
+}

@@ -81,6 +81,15 @@ export interface HotkeysConfig {
   toggle_widget: string;
 }
 
+export interface WallpaperVisualizerConfig {
+  enabled: boolean;
+  style: 'bars' | 'wave' | 'glow';
+  bars_count: number;
+  height_px: number;
+  opacity: number;
+  accent_color: 'spotify' | 'cyan_purple' | 'neon_blue' | 'fire';
+}
+
 export interface AppConfig {
   autostart: boolean;
   language: string;
@@ -93,6 +102,7 @@ export interface AppConfig {
   widget: WidgetConfig;
   music: MusicConfig;
   hotkeys?: HotkeysConfig;
+  visualizer?: WallpaperVisualizerConfig;
 }
 
 export interface MonitorInfo {

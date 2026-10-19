@@ -214,6 +214,36 @@ impl ArgbSurface {
         }
     }
 
+    /// Draw a line using Bresenham's algorithm
+    pub fn draw_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, color: u32) {
+        let mut x = x0.round() as i32;
+        let mut y = y0.round() as i32;
+        let x2 = x1.round() as i32;
+        let y2 = y1.round() as i32;
+
+        let dx = (x2 - x).abs();
+        let dy = -(y2 - y).abs();
+        let sx = if x < x2 { 1 } else { -1 };
+        let sy = if y < y2 { 1 } else { -1 };
+        let mut err = dx + dy;
+
+        loop {
+            self.blend_pixel(x, y, color);
+            if x == x2 && y == y2 {
+                break;
+            }
+            let e2 = 2 * err;
+            if e2 >= dy {
+                err += dy;
+                x += sx;
+            }
+            if e2 <= dx {
+                err += dx;
+                y += sy;
+            }
+        }
+    }
+
     /// Draw a horizontal progress bar
     #[allow(clippy::too_many_arguments)]
     pub fn draw_progress_bar(&mut self, x: f32, y: f32, w: f32, h: f32, progress: f32, bg_col: u32, fill_col: u32) {

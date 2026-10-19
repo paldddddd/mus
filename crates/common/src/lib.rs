@@ -7,7 +7,8 @@ pub mod normalize;
 pub mod paths;
 
 pub use config::{
-    AppConfig, GovernorConfig, HotkeysConfig, MusicConfig, MusicSource, WidgetConfig,
+    AppConfig, GovernorConfig, HotkeysConfig, MusicConfig, MusicSource, WallpaperVisualizerConfig,
+    WidgetConfig,
 };
 pub use ipc::{send_request, IpcError, IpcRequest, IpcResponse, PIPE_NAME};
 pub use models::{BindingItem, BindingScope, PlaylistItem, TrackItem, WallpaperItem, WallpaperKind};

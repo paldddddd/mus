@@ -5198,6 +5198,7 @@ dependencies = [
  "anyhow",
  "audio-engine",
  "common",
+ "desktop-host",
  "serde",
  "serde_json",
  "tracing",

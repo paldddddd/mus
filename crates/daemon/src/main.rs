@@ -7,7 +7,7 @@ mod tray;
 use anyhow::{bail, Context, Result};
 use audio_engine::AudioEngine;
 use common::{logs_dir, AppConfig, BindingItem, BindingScope, MusicSource, WallpaperItem};
-use widget::WidgetController;
+use widget::{WallpaperVisualizerWindow, WidgetController};
 use desktop_host::{
     apply_eco_profile, collect_diag, enumerate_monitors, DesktopHostWindow, RenderMode,
 };
@@ -663,6 +663,20 @@ impl IpcHandler for DaemonContext {
                     "hotkeys": def_hk,
                 }))
             }
+            "visualizer.getConfig" => {
+                let cfg = self.config.lock().unwrap().visualizer.clone();
+                Ok(serde_json::to_value(cfg)?)
+            }
+            "visualizer.setConfig" => {
+                let vis_val = params.get("visualizer").unwrap_or(&params);
+                let new_vis: common::WallpaperVisualizerConfig = serde_json::from_value(vis_val.clone())?;
+                {
+                    let mut cfg = self.config.lock().unwrap();
+                    cfg.visualizer = new_vis.clone();
+                    let _ = cfg.save();
+                }
+                Ok(serde_json::to_value(new_vis)?)
+            }
             _ => bail!("Unknown IPC method: {}", method),
         }
     }
@@ -742,6 +756,11 @@ fn main() -> Result<()> {
             return run_cli_widget_theme(theme);
         }
     }
+    if let Some(pos) = args.iter().position(|arg| arg == "--visualizer-style" || arg == "visualizer-style") {
+        if let Some(style) = args.get(pos + 1) {
+            return run_cli_visualizer_style(style);
+        }
+    }
     if args.iter().any(|arg| arg == "--bindings-list" || arg == "bindings-list") {
         return run_cli_bindings_list();
     }
@@ -814,6 +833,17 @@ fn run_daemon() -> Result<()> {
         }
         hosts.push(host);
     }
+
+    // Create Wallpaper Visualizer overlays for active monitors
+    let mut visualizers: Vec<Box<WallpaperVisualizerWindow>> = Vec::new();
+    let vis_cfg_initial = config.lock().unwrap().visualizer.clone();
+    for monitor in &monitors {
+        match WallpaperVisualizerWindow::create(monitor.clone(), &vis_cfg_initial) {
+            Ok(vis) => visualizers.push(vis),
+            Err(e) => warn!("Failed to create wallpaper visualizer for monitor {}: {e}", monitor.name),
+        }
+    }
+    let mut current_vis_height = vis_cfg_initial.height_px;
 
     // Initialize Governor
     let gov_config = config.lock().unwrap().governor.clone();
@@ -1249,6 +1279,30 @@ fn run_daemon() -> Result<()> {
                 w.update(is_paused);
             }
 
+            // Update wallpaper audio visualizer layer on all monitors
+            let is_system_paused = last_state != GovernorState::Running;
+            let vis_cfg = config.lock().unwrap().visualizer.clone();
+            if vis_cfg.height_px != current_vis_height {
+                visualizers.clear();
+                for monitor in &monitors {
+                    if let Ok(vis) = WallpaperVisualizerWindow::create(monitor.clone(), &vis_cfg) {
+                        visualizers.push(vis);
+                    }
+                }
+                current_vis_height = vis_cfg.height_px;
+            }
+
+            if vis_cfg.enabled && !is_system_paused {
+                let spectrum = audio.visualizer.get_spectrum(vis_cfg.bars_count as usize);
+                for vis in &mut visualizers {
+                    vis.update(&spectrum, &vis_cfg, false);
+                }
+            } else {
+                for vis in &mut visualizers {
+                    vis.update(&[], &vis_cfg, true);
+                }
+            }
+
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -1263,6 +1317,7 @@ fn run_daemon() -> Result<()> {
 
     info!("Shutting down wallmus daemon...");
     ipc_server.stop();
+    drop(visualizers);
     drop(hosts);
     info!("Clean shutdown complete.");
 
@@ -1541,5 +1596,12 @@ fn run_video_test(video_path: &str, duration_secs: u64) -> Result<()> {
 
     drop(renderers);
     drop(hosts);
+    Ok(())
+}
+
+fn run_cli_visualizer_style(style: &str) -> Result<()> {
+    println!("Setting visualizer style to '{}'...", style);
+    let resp = send_request("visualizer.setConfig", serde_json::json!({ "style": style }))?;
+    println!("Daemon response: {:?}", resp);
     Ok(())
 }
