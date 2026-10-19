@@ -6,7 +6,7 @@ pub mod normalize;
 pub mod paths;
 
 pub use config::{AppConfig, GovernorConfig, MusicConfig, MusicSource, WidgetConfig};
-pub use models::{PlaylistItem, TrackItem, WallpaperItem, WallpaperKind};
+pub use models::{BindingItem, BindingScope, PlaylistItem, TrackItem, WallpaperItem, WallpaperKind};
 pub use paths::*;
 
 use serde::{Deserialize, Serialize};

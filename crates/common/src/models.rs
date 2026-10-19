@@ -86,3 +86,50 @@ pub struct PlaylistItem {
     pub name: String,
     pub track_ids: Vec<String>,
 }
+
+/// Scope of a music-to-wallpaper binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BindingScope {
+    Track,
+    Album,
+    Artist,
+    Playlist,
+    External,
+}
+
+impl BindingScope {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Track => "track",
+            Self::Album => "album",
+            Self::Artist => "artist",
+            Self::Playlist => "playlist",
+            Self::External => "external",
+        }
+    }
+}
+
+impl std::str::FromStr for BindingScope {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "track" => Ok(Self::Track),
+            "album" => Ok(Self::Album),
+            "artist" => Ok(Self::Artist),
+            "playlist" => Ok(Self::Playlist),
+            "external" => Ok(Self::External),
+            other => anyhow::bail!("Invalid binding scope: '{}'", other),
+        }
+    }
+}
+
+/// Single binding mapping a track/album/artist/playlist/external key to a wallpaper ID.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BindingItem {
+    pub id: Option<i64>,
+    pub scope: BindingScope,
+    pub key: String,
+    pub wallpaper_id: String,
+}

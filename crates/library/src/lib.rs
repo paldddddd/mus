@@ -1,10 +1,12 @@
 //! SQLite storage and wallpaper metadata management.
 
+pub mod bindings;
 pub mod scanner;
 pub mod track_id;
 mod tracks;
 pub mod watcher;
 
+pub use bindings::{resolve, BindingLookup, ResolutionResult, TrackContext};
 pub use scanner::{read_track_metadata, scan_folders, ScanProgress, ScanSummary, AUDIO_EXTENSIONS};
 pub use track_id::compute_track_id;
 pub use watcher::LibraryWatcher;
@@ -202,6 +204,38 @@ impl Database {
             .collect();
 
         Ok(items)
+    }
+
+    /// Retrieve single wallpaper by id.
+    pub fn get_wallpaper(&self, id: &str) -> Result<Option<WallpaperItem>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, name, kind, source_path, processed_path, thumb_path,
+                   fit, fps_cap, width, height, duration_ms, created_at
+            FROM wallpapers
+            WHERE id = ?1
+            "#,
+        )?;
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(WallpaperItem {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                kind: row.get(2)?,
+                source_path: row.get(3)?,
+                processed_path: row.get(4)?,
+                thumb_path: row.get(5)?,
+                fit: row.get(6)?,
+                fps_cap: row.get(7)?,
+                width: row.get(8)?,
+                height: row.get(9)?,
+                duration_ms: row.get(10)?,
+                created_at: row.get(11)?,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Delete wallpaper by id.

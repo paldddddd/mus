@@ -5,14 +5,14 @@ mod tray;
 
 use anyhow::{bail, Context, Result};
 use audio_engine::AudioEngine;
-use common::{logs_dir, AppConfig, MusicSource, WallpaperItem};
+use common::{logs_dir, AppConfig, BindingItem, BindingScope, MusicSource, WallpaperItem};
 use widget::WidgetController;
 use desktop_host::{
     apply_eco_profile, collect_diag, enumerate_monitors, DesktopHostWindow, RenderMode,
 };
 use governor::{Governor, GovernorState};
 use ipc::{send_request, IpcHandler, IpcServer};
-use library::{Database, LibraryWatcher};
+use library::{resolve, Database, LibraryWatcher, TrackContext};
 use media::import_wallpaper;
 use render::{MpvRenderer, Renderer, StaticImageRenderer};
 use single_instance::SingleInstanceGuard;
@@ -44,6 +44,30 @@ const VK_MEDIA_PREV_TRACK: u32 = 0xB1;
 const VK_MEDIA_STOP: u32 = 0xB2;
 const VK_MEDIA_PLAY_PAUSE: u32 = 0xB3;
 
+/// Context data for pending track change debounce.
+#[derive(Debug, Clone)]
+pub struct TrackContextData {
+    pub track_id: Option<String>,
+    pub artist: Option<String>,
+    pub title: Option<String>,
+    pub album: Option<String>,
+    pub playlist_id: Option<i64>,
+    pub is_external: bool,
+}
+
+impl TrackContextData {
+    pub fn as_context(&self) -> TrackContext<'_> {
+        TrackContext {
+            track_id: self.track_id.as_deref(),
+            artist: self.artist.as_deref(),
+            title: self.title.as_deref(),
+            album: self.album.as_deref(),
+            playlist_id: self.playlist_id,
+            is_external: self.is_external,
+        }
+    }
+}
+
 /// Daemon runtime controller managing wallpaper playback and IPC.
 struct DaemonContext {
     db: Arc<Database>,
@@ -53,6 +77,7 @@ struct DaemonContext {
     should_quit: Arc<AtomicBool>,
     audio: Arc<AudioEngine>,
     watcher: Arc<Mutex<Option<LibraryWatcher>>>,
+    pending_track_change: Arc<Mutex<Option<(TrackContextData, Instant)>>>,
 }
 
 impl IpcHandler for DaemonContext {
@@ -476,6 +501,143 @@ impl IpcHandler for DaemonContext {
                 let _ = cfg.save();
                 Ok(serde_json::json!({ "enabled": enabled }))
             }
+            "bindings.list" => {
+                let list = self.db.list_bindings()?;
+                Ok(serde_json::to_value(list)?)
+            }
+            "bindings.set" => {
+                let scope_str = params
+                    .get("scope")
+                    .and_then(|v| v.as_str())
+                    .context("Missing 'scope' parameter (track/album/artist/playlist/external)")?;
+                let scope: BindingScope = scope_str.parse()?;
+                let key = params
+                    .get("key")
+                    .and_then(|v| v.as_str())
+                    .context("Missing 'key' parameter")?;
+                let wallpaper_id = params
+                    .get("wallpaper_id")
+                    .and_then(|v| v.as_str())
+                    .context("Missing 'wallpaper_id' parameter")?;
+
+                if self.db.get_wallpaper(wallpaper_id)?.is_none() {
+                    bail!("Wallpaper with id '{}' not found", wallpaper_id);
+                }
+
+                let item = BindingItem {
+                    id: None,
+                    scope,
+                    key: key.to_string(),
+                    wallpaper_id: wallpaper_id.to_string(),
+                };
+                self.db.save_binding(&item)?;
+                Ok(serde_json::json!({ "status": "saved", "binding": item }))
+            }
+            "bindings.remove" => {
+                if let Some(id) = params.get("id").and_then(|v| v.as_i64()) {
+                    let deleted = self.db.delete_binding_by_id(id)?;
+                    return Ok(serde_json::json!({ "deleted": deleted }));
+                }
+                let scope_str = params
+                    .get("scope")
+                    .and_then(|v| v.as_str())
+                    .context("Missing 'scope' or 'id'")?;
+                let scope: BindingScope = scope_str.parse()?;
+                let key = params
+                    .get("key")
+                    .and_then(|v| v.as_str())
+                    .context("Missing 'key'")?;
+                let deleted = self.db.delete_binding(scope, key)?;
+                Ok(serde_json::json!({ "deleted": deleted }))
+            }
+            "bindings.resolve" => {
+                let track_id = params.get("track_id").and_then(|v| v.as_str());
+                let artist = params.get("artist").and_then(|v| v.as_str());
+                let title = params.get("title").and_then(|v| v.as_str());
+                let album = params.get("album").and_then(|v| v.as_str());
+                let playlist_id = params.get("playlist_id").and_then(|v| v.as_i64());
+                let is_external = params.get("is_external").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                let ctx = TrackContext {
+                    track_id,
+                    artist,
+                    title,
+                    album,
+                    playlist_id,
+                    is_external,
+                };
+                let def_wp = self.config.lock().unwrap().active_wallpaper_id.clone();
+                let res = resolve(&ctx, self.db.as_ref(), def_wp.as_deref());
+                if let Some(r) = res {
+                    Ok(serde_json::json!({
+                        "wallpaper_id": r.wallpaper_id,
+                        "matched_scope": r.matched_scope.map(|s| s.as_str()),
+                    }))
+                } else {
+                    Ok(serde_json::Value::Null)
+                }
+            }
+            "bindings.getMode" => {
+                let follow_music = self.config.lock().unwrap().follow_music;
+                let mode = if follow_music { "follow_music" } else { "fixed" };
+                Ok(serde_json::json!({
+                    "follow_music": follow_music,
+                    "mode": mode,
+                }))
+            }
+            "bindings.setMode" => {
+                let mut cfg = self.config.lock().unwrap();
+                if let Some(b) = params.get("follow_music").and_then(|v| v.as_bool()) {
+                    cfg.follow_music = b;
+                } else if let Some(mode) = params.get("mode").and_then(|v| v.as_str()) {
+                    cfg.follow_music = mode == "follow_music";
+                } else {
+                    bail!("Missing 'mode' (follow_music/fixed) or 'follow_music' boolean");
+                }
+                let _ = cfg.save();
+                let mode = if cfg.follow_music { "follow_music" } else { "fixed" };
+                Ok(serde_json::json!({
+                    "follow_music": cfg.follow_music,
+                    "mode": mode,
+                }))
+            }
+            "bindings.setDefault" => {
+                let wp_id = params
+                    .get("wallpaper_id")
+                    .and_then(|v| v.as_str())
+                    .context("Missing 'wallpaper_id'")?;
+                if self.db.get_wallpaper(wp_id)?.is_none() {
+                    bail!("Wallpaper with id '{}' not found", wp_id);
+                }
+                let mut cfg = self.config.lock().unwrap();
+                cfg.active_wallpaper_id = Some(wp_id.to_string());
+                let _ = cfg.save();
+                let _ = self.db.set_kv("default_wallpaper_id", wp_id);
+                Ok(serde_json::json!({ "default_wallpaper_id": wp_id }))
+            }
+            "bindings.getDefault" => {
+                let def = self.config.lock().unwrap().active_wallpaper_id.clone();
+                Ok(serde_json::json!({ "default_wallpaper_id": def }))
+            }
+            "bindings.triggerChange" => {
+                let track_id = params.get("track_id").and_then(|v| v.as_str()).map(String::from);
+                let artist = params.get("artist").and_then(|v| v.as_str()).map(String::from);
+                let title = params.get("title").and_then(|v| v.as_str()).map(String::from);
+                let album = params.get("album").and_then(|v| v.as_str()).map(String::from);
+                let playlist_id = params.get("playlist_id").and_then(|v| v.as_i64());
+                let is_external = params.get("is_external").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                let data = TrackContextData {
+                    track_id,
+                    artist,
+                    title,
+                    album,
+                    playlist_id,
+                    is_external,
+                };
+                *self.pending_track_change.lock().unwrap() = Some((data, Instant::now()));
+                Ok(serde_json::json!({ "status": "change_triggered" }))
+            }
             _ => bail!("Unknown IPC method: {}", method),
         }
     }
@@ -505,54 +667,76 @@ fn main() -> Result<()> {
 
     let args: Vec<String> = env::args().collect();
 
-    // CLI Commands
-    if args.iter().any(|arg| arg == "--diag") {
+    // CLI Commands (support both `--cmd` and `cmd`)
+    if args.iter().any(|arg| arg == "--diag" || arg == "diag") {
         return run_diag();
     }
-    if args.iter().any(|arg| arg == "--selftest") {
-        return run_selftest(10);
+    if let Some(pos) = args.iter().position(|arg| arg == "--selftest" || arg == "selftest") {
+        let secs = args.get(pos + 1).and_then(|s| s.parse().ok()).unwrap_or(10);
+        return run_selftest(secs);
     }
-    if let Some(pos) = args.iter().position(|arg| arg == "--image") {
+    if let Some(pos) = args.iter().position(|arg| arg == "--image" || arg == "test-image") {
         if let Some(image_path) = args.get(pos + 1) {
-            return run_image_test(image_path, 10);
+            let secs = args.get(pos + 2).and_then(|s| s.parse().ok()).unwrap_or(10);
+            return run_image_test(image_path, secs);
         }
     }
-    if let Some(pos) = args.iter().position(|arg| arg == "--video") {
+    if let Some(pos) = args.iter().position(|arg| arg == "--video" || arg == "test-video") {
         if let Some(video_path) = args.get(pos + 1) {
-            return run_video_test(video_path, 10);
+            let secs = args.get(pos + 2).and_then(|s| s.parse().ok()).unwrap_or(10);
+            return run_video_test(video_path, secs);
         }
     }
-    if let Some(pos) = args.iter().position(|arg| arg == "--import") {
+    if let Some(pos) = args.iter().position(|arg| arg == "--import" || arg == "import") {
         if let Some(file_path) = args.get(pos + 1) {
             return run_cli_import(file_path);
         }
     }
-    if args.iter().any(|arg| arg == "--metrics") {
+    if args.iter().any(|arg| arg == "--metrics" || arg == "metrics") {
         return run_cli_metrics();
     }
-    if args.iter().any(|arg| arg == "--pause") {
+    if args.iter().any(|arg| arg == "--pause" || arg == "pause") {
         return run_cli_pause(true);
     }
-    if args.iter().any(|arg| arg == "--resume") {
+    if args.iter().any(|arg| arg == "--resume" || arg == "resume") {
         return run_cli_pause(false);
     }
-    if args.iter().any(|arg| arg == "--track") {
+    if args.iter().any(|arg| arg == "--track" || arg == "track") {
         return run_cli_track();
     }
-    if args.iter().any(|arg| arg == "--spectrum") {
+    if args.iter().any(|arg| arg == "--spectrum" || arg == "spectrum") {
         return run_cli_spectrum();
     }
-    if let Some(pos) = args.iter().position(|arg| arg == "--control") {
+    if let Some(pos) = args.iter().position(|arg| arg == "--control" || arg == "control") {
         if let Some(action) = args.get(pos + 1) {
             return run_cli_control(action);
         }
     }
-    if let Some(pos) = args.iter().position(|arg| arg == "--widget-theme") {
+    if let Some(pos) = args.iter().position(|arg| arg == "--widget-theme" || arg == "widget-theme") {
         if let Some(theme) = args.get(pos + 1) {
             return run_cli_widget_theme(theme);
         }
     }
-    if args.iter().any(|arg| arg == "--quit" || arg == "--exit" || arg == "--stop") {
+    if args.iter().any(|arg| arg == "--bindings-list" || arg == "bindings-list") {
+        return run_cli_bindings_list();
+    }
+    if let Some(pos) = args.iter().position(|arg| arg == "--bindings-set" || arg == "bindings-set") {
+        if let (Some(scope), Some(key), Some(wp_id)) = (args.get(pos + 1), args.get(pos + 2), args.get(pos + 3)) {
+            return run_cli_bindings_set(scope, key, wp_id);
+        } else {
+            eprintln!("Usage: wallmus bindings-set <scope> <key> <wallpaper_id>");
+            return Ok(());
+        }
+    }
+    if let Some(pos) = args.iter().position(|arg| arg == "--bindings-mode" || arg == "bindings-mode") {
+        if let Some(mode) = args.get(pos + 1) {
+            return run_cli_bindings_mode(mode);
+        } else {
+            eprintln!("Usage: wallmus bindings-mode <follow_music|fixed>");
+            return Ok(());
+        }
+    }
+    if args.iter().any(|arg| arg == "--quit" || arg == "quit" || arg == "--exit" || arg == "exit" || arg == "--stop" || arg == "stop") {
         return run_cli_quit();
     }
 
@@ -585,7 +769,7 @@ fn run_daemon() -> Result<()> {
     // Get active wallpaper or use first in database
     let wallpapers = db.list_wallpapers().unwrap_or_default();
     let initial_wp = wallpapers.first().cloned();
-    let active_wallpaper = Arc::new(Mutex::new(initial_wp));
+    let active_wallpaper = Arc::new(Mutex::new(initial_wp.clone()));
 
     let should_quit = Arc::new(AtomicBool::new(false));
 
@@ -644,15 +828,29 @@ fn run_daemon() -> Result<()> {
         }
     }
 
-    // Auto-save player state on track changed
+    // Initialize pending track change debounce channel for bindings engine
+    let pending_track_change: Arc<Mutex<Option<(TrackContextData, Instant)>>> =
+        Arc::new(Mutex::new(None));
+
+    // Auto-save player state on track changed and notify bindings engine
     let db_for_player = db.clone();
     let player_for_cb = audio.player.clone();
+    let pending_for_player = pending_track_change.clone();
     audio.player.set_on_track_changed(move |track| {
         info!("Track changed: {} - {}", track.artist, track.title);
         let state = player_for_cb.get_state();
         if let Ok(json) = serde_json::to_string(&state) {
             let _ = db_for_player.set_kv("player_state", &json);
         }
+        let data = TrackContextData {
+            track_id: Some(track.id.clone()),
+            artist: Some(track.artist.clone()),
+            title: Some(track.title.clone()),
+            album: track.album.clone(),
+            playlist_id: None,
+            is_external: false,
+        };
+        *pending_for_player.lock().unwrap() = Some((data, Instant::now()));
     });
 
     // Initialize LibraryWatcher for monitored music folders
@@ -671,6 +869,7 @@ fn run_daemon() -> Result<()> {
         should_quit: should_quit.clone(),
         audio: audio.clone(),
         watcher: watcher_arc.clone(),
+        pending_track_change: pending_track_change.clone(),
     });
 
     // Start IPC Server
@@ -748,6 +947,9 @@ fn run_daemon() -> Result<()> {
 
     let mut last_gov_check = Instant::now();
     let mut last_state = GovernorState::Running;
+    let mut current_wallpaper_id = initial_wp.as_ref().map(|w| w.id.clone());
+    let mut last_external_poll = Instant::now();
+    let mut last_external_track_key: Option<String> = None;
 
     unsafe {
         let mut msg = MSG::default();
@@ -885,6 +1087,116 @@ fn run_daemon() -> Result<()> {
                 }
             }
 
+            // Check external SMTC track changes if external source is active
+            if last_external_poll.elapsed() >= Duration::from_millis(250) {
+                last_external_poll = Instant::now();
+                let is_ext = config.lock().unwrap().music.source == MusicSource::External;
+                if is_ext {
+                    if let Ok(Some(ext_t)) = audio.smtc.get_current_track() {
+                        let key = format!("{}|{}", ext_t.artist, ext_t.title);
+                        if last_external_track_key.as_deref() != Some(&key) {
+                            info!("External SMTC track changed: {} - {}", ext_t.artist, ext_t.title);
+                            last_external_track_key = Some(key);
+                            let data = TrackContextData {
+                                track_id: None,
+                                artist: Some(ext_t.artist),
+                                title: Some(ext_t.title),
+                                album: if ext_t.album_title.is_empty() {
+                                    None
+                                } else {
+                                    Some(ext_t.album_title)
+                                },
+                                playlist_id: None,
+                                is_external: true,
+                            };
+                            *pending_track_change.lock().unwrap() = Some((data, Instant::now()));
+                        }
+                    }
+                }
+            }
+
+            // Debounced bindings resolution (300 ms debounce when tracks switch rapidly)
+            let ready_track_change = {
+                let mut guard = pending_track_change.lock().unwrap();
+                if let Some((_, ref req_time)) = *guard {
+                    if req_time.elapsed() >= Duration::from_millis(300) {
+                        guard.take().map(|(d, _)| d)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+            if let Some(track_data) = ready_track_change {
+                let follow_music = config.lock().unwrap().follow_music;
+                if !follow_music {
+                    info!("Bindings engine: follow_music is disabled (fixed mode); keeping current wallpaper");
+                } else {
+                    let default_wp_id = config.lock().unwrap().active_wallpaper_id.clone();
+                    let res = resolve(&track_data.as_context(), db.as_ref(), default_wp_id.as_deref());
+                    if let Some(res) = res {
+                        let mut active = active_wallpaper.lock().unwrap();
+                        let already_active = active.as_ref().map(|a| a.id == res.wallpaper_id).unwrap_or(false);
+                        if already_active {
+                            info!("Bindings engine: Resolved wallpaper '{}' is already active; skipping reload", res.wallpaper_id);
+                        } else {
+                            match db.get_wallpaper(&res.wallpaper_id) {
+                                Ok(Some(wp)) => {
+                                    if Path::new(&wp.processed_path).exists() {
+                                        info!("Bindings engine: applying {:?} binding -> switching to wallpaper '{}' ({})",
+                                            res.matched_scope, wp.name, wp.id);
+                                        *active = Some(wp.clone());
+                                        let _ = db.set_kv("active_wallpaper_id", &wp.id);
+                                    } else {
+                                        warn!("app.warning: Bound wallpaper '{}' file '{}' missing! Falling back to default",
+                                            wp.id, wp.processed_path);
+                                        if let Some(ref def_id) = default_wp_id {
+                                            if active.as_ref().map(|a| &a.id) != Some(def_id) {
+                                                if let Ok(Some(def_wp)) = db.get_wallpaper(def_id) {
+                                                    *active = Some(def_wp);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    warn!("app.warning: Bound wallpaper '{}' not found in database! Falling back to default",
+                                        res.wallpaper_id);
+                                    if let Some(ref def_id) = default_wp_id {
+                                        if active.as_ref().map(|a| &a.id) != Some(def_id) {
+                                            if let Ok(Some(def_wp)) = db.get_wallpaper(def_id) {
+                                                *active = Some(def_wp);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Sync active wallpaper to renderers
+            let current_target = active_wallpaper.lock().unwrap().clone();
+            if current_target.as_ref().map(|w| &w.id) != current_wallpaper_id.as_ref() {
+                if let Some(ref wp) = current_target {
+                    info!("Syncing active wallpaper '{}' to {} renderers", wp.name, renderers.len());
+                    for (i, r) in renderers.iter_mut().enumerate() {
+                        if let Err(e) = r.load(&wp.processed_path) {
+                            warn!("Failed to load wallpaper on renderer {i}: {e}");
+                        }
+                    }
+                    current_wallpaper_id = Some(wp.id.clone());
+                } else {
+                    for r in &mut renderers {
+                        let _ = r.unload();
+                    }
+                    current_wallpaper_id = None;
+                }
+            }
+
             // Update widget window frame
             if let Some(ref mut w) = widget_controller {
                 let is_paused = last_state != GovernorState::Running;
@@ -1004,6 +1316,35 @@ fn run_cli_control(action: &str) -> Result<()> {
 fn run_cli_widget_theme(theme: &str) -> Result<()> {
     println!("Setting widget theme to '{}'...", theme);
     let resp = send_request("widget.setTheme", serde_json::json!({ "theme": theme }))?;
+    println!("Daemon response: {:?}", resp);
+    Ok(())
+}
+
+fn run_cli_bindings_list() -> Result<()> {
+    println!("Querying wallpaper-to-music bindings from daemon...");
+    let resp = send_request("bindings.list", serde_json::Value::Null)?;
+    if resp.ok {
+        println!("{}", serde_json::to_string_pretty(&resp.result)?);
+    } else {
+        eprintln!("Error from daemon: {:?}", resp.error);
+    }
+    Ok(())
+}
+
+fn run_cli_bindings_set(scope: &str, key: &str, wallpaper_id: &str) -> Result<()> {
+    println!("Setting binding: scope='{scope}', key='{key}' -> wallpaper='{wallpaper_id}'...");
+    let resp = send_request("bindings.set", serde_json::json!({
+        "scope": scope,
+        "key": key,
+        "wallpaper_id": wallpaper_id,
+    }))?;
+    println!("Daemon response: {:?}", resp);
+    Ok(())
+}
+
+fn run_cli_bindings_mode(mode: &str) -> Result<()> {
+    println!("Setting bindings mode to '{}'...", mode);
+    let resp = send_request("bindings.setMode", serde_json::json!({ "mode": mode }))?;
     println!("Daemon response: {:?}", resp);
     Ok(())
 }
