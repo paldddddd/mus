@@ -168,10 +168,16 @@ pub struct AppConfig {
     pub hotkeys: HotkeysConfig,
     #[serde(default)]
     pub visualizer: WallpaperVisualizerConfig,
+    #[serde(default = "default_mouse_interaction")]
+    pub mouse_interaction: bool,
 }
 
 fn default_crossfade_duration() -> u64 {
     500
+}
+
+fn default_mouse_interaction() -> bool {
+    true
 }
 
 impl Default for AppConfig {
@@ -189,6 +195,7 @@ impl Default for AppConfig {
             music: MusicConfig::default(),
             hotkeys: HotkeysConfig::default(),
             visualizer: WallpaperVisualizerConfig::default(),
+            mouse_interaction: default_mouse_interaction(),
         }
     }
 }

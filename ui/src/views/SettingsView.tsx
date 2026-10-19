@@ -13,6 +13,7 @@ import {
   BarChart2,
   Waves,
   Sparkles,
+  MousePointer,
 } from 'lucide-react';
 import { Language, translations } from '../i18n';
 import { HotkeysConfig, WallpaperVisualizerConfig } from '../types';
@@ -62,6 +63,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     accent_color: 'spotify',
   });
 
+  const [mouseEnabled, setMouseEnabled] = useState<boolean>(true);
+  const [previewCoord, setPreviewCoord] = useState<{ x: number; y: number }>({ x: 50, y: 50 });
+
   const fetchVisualizer = useCallback(async () => {
     try {
       const resp = await requestDaemon<WallpaperVisualizerConfig>('visualizer.getConfig');
@@ -85,6 +89,28 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
+  const fetchMouseConfig = useCallback(async () => {
+    try {
+      const resp = await requestDaemon<{ enabled: boolean }>('mouse.getConfig');
+      if (resp && typeof resp.enabled === 'boolean') {
+        setMouseEnabled(resp.enabled);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch mouse config:', err);
+    }
+  }, []);
+
+  const handleToggleMouse = async (enabled: boolean) => {
+    setMouseEnabled(enabled);
+    try {
+      await requestDaemon('mouse.setConfig', { enabled });
+      setToastMessage(t.mouse_saved_toast);
+      setTimeout(() => setToastMessage(null), 2500);
+    } catch (err) {
+      console.error('Failed to update mouse config:', err);
+    }
+  };
+
   const fetchHotkeys = useCallback(async () => {
     try {
       const resp = await requestDaemon<{ hotkeys: HotkeysConfig; status: Record<string, boolean> }>('hotkeys.get');
@@ -102,7 +128,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   useEffect(() => {
     fetchHotkeys();
     fetchVisualizer();
-  }, [fetchHotkeys, fetchVisualizer]);
+    fetchMouseConfig();
+  }, [fetchHotkeys, fetchVisualizer, fetchMouseConfig]);
 
   // Handle global key recording
   useEffect(() => {
@@ -506,6 +533,102 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     />
                   );
                 })}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Desktop Mouse Reaction */}
+        <div className="glass-card" style={{ padding: '20px 24px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+              <MousePointer size={20} color="#38bdf8" />
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '0.92rem' }}>{t.mouse_title}</div>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  {t.mouse_subtitle}
+                </p>
+              </div>
+            </div>
+            <label className="switch" style={{ cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={mouseEnabled}
+                onChange={(e) => handleToggleMouse(e.target.checked)}
+              />
+              <span className="slider round" />
+            </label>
+          </div>
+
+          {mouseEnabled && (
+            <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                <span>Интерактивный тест отслеживания (наведите курсор):</span>
+                <span style={{ fontFamily: 'monospace', color: '#38bdf8', fontWeight: 600 }}>
+                  X: {previewCoord.x.toFixed(0)}% | Y: {previewCoord.y.toFixed(0)}%
+                </span>
+              </div>
+              <div
+                onMouseMove={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const x = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
+                  const y = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
+                  setPreviewCoord({ x, y });
+                }}
+                style={{
+                  height: '100px',
+                  borderRadius: '8px',
+                  background: 'rgba(0,0,0,0.45)',
+                  border: '1px solid rgba(56, 189, 248, 0.25)',
+                  position: 'relative',
+                  overflow: 'hidden',
+                  cursor: 'crosshair',
+                  backgroundImage: 'radial-gradient(circle, rgba(56,189,248,0.12) 1px, transparent 1px)',
+                  backgroundSize: '16px 16px',
+                }}
+              >
+                {/* Crosshair lines */}
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    bottom: 0,
+                    left: `${previewCoord.x}%`,
+                    width: '1px',
+                    background: 'rgba(56, 189, 248, 0.35)',
+                    pointerEvents: 'none',
+                    transition: 'left 0.05s ease-out',
+                  }}
+                />
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    right: 0,
+                    top: `${previewCoord.y}%`,
+                    height: '1px',
+                    background: 'rgba(56, 189, 248, 0.35)',
+                    pointerEvents: 'none',
+                    transition: 'top 0.05s ease-out',
+                  }}
+                />
+                {/* Glowing target cursor and aura */}
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: `${previewCoord.x}%`,
+                    top: `${previewCoord.y}%`,
+                    transform: 'translate(-50%, -50%)',
+                    width: '18px',
+                    height: '18px',
+                    borderRadius: '50%',
+                    border: '2px solid #38bdf8',
+                    background: 'rgba(56, 189, 248, 0.25)',
+                    boxShadow: '0 0 14px rgba(56, 189, 248, 0.7)',
+                    pointerEvents: 'none',
+                    transition: 'left 0.05s ease-out, top 0.05s ease-out',
+                  }}
+                />
               </div>
             </div>
           )}

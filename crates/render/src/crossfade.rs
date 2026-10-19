@@ -278,6 +278,16 @@ impl DualLayerHost {
         self.layer_b.revalidate()?;
         Ok(())
     }
+
+    /// Forward normalized mouse coordinates (0.0 .. 1.0) to active wallpaper renderer.
+    pub fn update_mouse(&mut self, norm_x: f32, norm_y: f32) {
+        if let Some(ref mut a) = self.renderer_a {
+            a.update_mouse(norm_x, norm_y);
+        }
+        if let Some(ref mut b) = self.renderer_b {
+            b.update_mouse(norm_x, norm_y);
+        }
+    }
 }
 
 struct DummyRenderer;

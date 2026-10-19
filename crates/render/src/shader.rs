@@ -40,8 +40,8 @@ pub struct ShaderUniforms {
     pub bass: f32,
     pub mid: f32,
     pub treble: f32,
-    pub pad0: f32,
-    pub pad1: f32,
+    pub mouse_x: f32,
+    pub mouse_y: f32,
 }
 
 pub const DEFAULT_WGSL_CYBER_TUNNEL: &str = r#"
@@ -52,8 +52,8 @@ struct Uniforms {
     bass: f32,
     mid: f32,
     treble: f32,
-    pad0: f32,
-    pad1: f32,
+    mouse_x: f32,
+    mouse_y: f32,
 };
 
 @group(0) @binding(0)
@@ -77,7 +77,9 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> VertexOutput {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let resolution = vec2<f32>(u.width, u.height);
-    let p = (in.uv * 2.0 - 1.0) * vec2<f32>(resolution.x / resolution.y, 1.0);
+    // Mouse subtly steers perspective towards cursor
+    let mouse_offset = (vec2<f32>(u.mouse_x, u.mouse_y) * 2.0 - 1.0) * 0.35;
+    let p = (in.uv * 2.0 - 1.0) * vec2<f32>(resolution.x / resolution.y, 1.0) - mouse_offset;
 
     let r = length(p) + 0.001;
     let theta = atan2(p.y, p.x);
@@ -114,8 +116,8 @@ struct Uniforms {
     bass: f32,
     mid: f32,
     treble: f32,
-    pad0: f32,
-    pad1: f32,
+    mouse_x: f32,
+    mouse_y: f32,
 };
 
 @group(0) @binding(0)
@@ -140,14 +142,20 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> VertexOutput {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let uv = in.uv;
     let t = u.time * 0.4;
+    let mouse = vec2<f32>(u.mouse_x, u.mouse_y);
+    let mouse_dist = length(uv - mouse);
 
     var color = vec3<f32>(0.02, 0.04, 0.08); // Deep midnight blue base
+
+    // Interactive ripple wave propagating from cursor
+    let mouse_ripple = sin(mouse_dist * 20.0 - t * 5.0) * exp(-mouse_dist * 5.0) * 0.06;
 
     // Multi-layer aurora ribbons
     for (var i: i32 = 1; i <= 4; i = i + 1) {
         let fi = f32(i);
         let wave = sin(uv.x * (2.0 + fi * 1.5) + t * (0.8 + fi * 0.2)) * 0.15
-                 + cos(uv.x * (4.0 + fi) - t * 0.5) * 0.08;
+                 + cos(uv.x * (4.0 + fi) - t * 0.5) * 0.08
+                 + mouse_ripple;
         let baseline = 0.35 + fi * 0.12 + wave + (u.bass * 0.1);
         let dist = abs(uv.y - baseline);
         let glow = exp(-dist * (18.0 - fi * 2.0));
@@ -158,6 +166,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         color = color + layer_color * glow * (0.7 + u.mid * 0.8);
     }
+
+    // Soft cursor illumination aura
+    let aura = exp(-mouse_dist * 12.0) * vec3<f32>(0.15, 0.85, 0.75) * 0.5;
+    color = color + aura;
 
     return vec4<f32>(color, 1.0);
 }
@@ -173,6 +185,8 @@ pub struct ShaderRenderer {
     audio_bass: Arc<AtomicU32>,
     audio_mid: Arc<AtomicU32>,
     audio_treble: Arc<AtomicU32>,
+    mouse_x: Arc<AtomicU32>,
+    mouse_y: Arc<AtomicU32>,
     render_thread: Option<std::thread::JoinHandle<()>>,
     current_source: Option<String>,
 }
@@ -192,6 +206,8 @@ impl ShaderRenderer {
             audio_bass: Arc::new(AtomicU32::new(0)),
             audio_mid: Arc::new(AtomicU32::new(0)),
             audio_treble: Arc::new(AtomicU32::new(0)),
+            mouse_x: Arc::new(AtomicU32::new(0.5f32.to_bits())),
+            mouse_y: Arc::new(AtomicU32::new(0.5f32.to_bits())),
             render_thread: None,
             current_source: None,
         }
@@ -215,6 +231,8 @@ impl ShaderRenderer {
             audio_bass: self.audio_bass.clone(),
             audio_mid: self.audio_mid.clone(),
             audio_treble: self.audio_treble.clone(),
+            mouse_x: self.mouse_x.clone(),
+            mouse_y: self.mouse_y.clone(),
         };
 
         self.running.store(true, Ordering::SeqCst);
@@ -244,6 +262,8 @@ struct ShaderRenderParams {
     audio_bass: Arc<AtomicU32>,
     audio_mid: Arc<AtomicU32>,
     audio_treble: Arc<AtomicU32>,
+    mouse_x: Arc<AtomicU32>,
+    mouse_y: Arc<AtomicU32>,
 }
 
 impl Renderer for ShaderRenderer {
@@ -294,6 +314,11 @@ impl Renderer for ShaderRenderer {
         }
         self.current_source = None;
         Ok(())
+    }
+
+    fn update_mouse(&mut self, x: f32, y: f32) {
+        self.mouse_x.store(x.to_bits(), Ordering::Relaxed);
+        self.mouse_y.store(y.to_bits(), Ordering::Relaxed);
     }
 }
 
@@ -443,6 +468,8 @@ fn run_wgpu_loop(params: ShaderRenderParams) -> Result<()> {
         let bass = f32::from_bits(params.audio_bass.load(Ordering::Relaxed));
         let mid = f32::from_bits(params.audio_mid.load(Ordering::Relaxed));
         let treble = f32::from_bits(params.audio_treble.load(Ordering::Relaxed));
+        let mouse_x = f32::from_bits(params.mouse_x.load(Ordering::Relaxed));
+        let mouse_y = f32::from_bits(params.mouse_y.load(Ordering::Relaxed));
 
         let uniforms = ShaderUniforms {
             time,
@@ -451,8 +478,8 @@ fn run_wgpu_loop(params: ShaderRenderParams) -> Result<()> {
             bass,
             mid,
             treble,
-            pad0: 0.0,
-            pad1: 0.0,
+            mouse_x,
+            mouse_y,
         };
 
         queue.write_buffer(&uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));

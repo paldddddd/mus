@@ -1,6 +1,7 @@
 mod autostart;
 mod hotkeys;
 mod ipc;
+mod mouse_hook;
 mod single_instance;
 mod tray;
 
@@ -16,6 +17,7 @@ use hotkeys::{HotkeyAction, HotkeyManager};
 use ipc::{send_request, IpcHandler, IpcServer};
 use library::{resolve, Database, LibraryWatcher, TrackContext};
 use media::import_wallpaper;
+use mouse_hook::MouseHookManager;
 use render::{DualLayerHost, MpvRenderer, Renderer, StaticImageRenderer};
 use single_instance::SingleInstanceGuard;
 use std::env;
@@ -677,6 +679,24 @@ impl IpcHandler for DaemonContext {
                 }
                 Ok(serde_json::to_value(new_vis)?)
             }
+            "mouse.getConfig" => {
+                let cfg = self.config.lock().unwrap();
+                Ok(serde_json::json!({
+                    "enabled": cfg.mouse_interaction,
+                }))
+            }
+            "mouse.setConfig" => {
+                let enabled = params
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .context("Missing 'enabled' parameter")?;
+                {
+                    let mut cfg = self.config.lock().unwrap();
+                    cfg.mouse_interaction = enabled;
+                    let _ = cfg.save();
+                }
+                Ok(serde_json::json!({ "enabled": enabled }))
+            }
             _ => bail!("Unknown IPC method: {}", method),
         }
     }
@@ -988,6 +1008,11 @@ fn run_daemon() -> Result<()> {
     let mut last_external_poll = Instant::now();
     let mut last_external_track_key: Option<String> = None;
 
+    let mut mouse_hook_mgr = MouseHookManager::new();
+    let initial_mouse_enabled = config.lock().unwrap().mouse_interaction;
+    mouse_hook_mgr.set_enabled(initial_mouse_enabled);
+    let mut last_mouse_interaction = initial_mouse_enabled;
+
     unsafe {
         let mut msg = MSG::default();
 
@@ -1126,6 +1151,7 @@ fn run_daemon() -> Result<()> {
                         info!("Governor state changed: {:?} -> {:?}", last_state, current_gov_state);
                         match &current_gov_state {
                             GovernorState::Paused(reason) => {
+                                mouse_hook_mgr.set_enabled(false);
                                 for h in &mut hosts {
                                     let _ = h.pause();
                                 }
@@ -1135,6 +1161,8 @@ fn run_daemon() -> Result<()> {
                                 info!("Paused rendering due to: {:?}", reason);
                             }
                             GovernorState::Running => {
+                                let mouse_enabled = config.lock().unwrap().mouse_interaction;
+                                mouse_hook_mgr.set_enabled(mouse_enabled);
                                 for h in &mut hosts {
                                     let _ = h.resume();
                                 }
@@ -1144,6 +1172,7 @@ fn run_daemon() -> Result<()> {
                                 info!("Resumed rendering");
                             }
                             GovernorState::Unloaded => {
+                                mouse_hook_mgr.set_enabled(false);
                                 for h in &mut hosts {
                                     let _ = h.unload();
                                 }
@@ -1268,6 +1297,30 @@ fn run_daemon() -> Result<()> {
                 }
             }
 
+            // Sync dynamic mouse interaction config changes
+            let current_mouse_interaction = config.lock().unwrap().mouse_interaction;
+            if current_mouse_interaction != last_mouse_interaction {
+                last_mouse_interaction = current_mouse_interaction;
+                if last_state == GovernorState::Running {
+                    mouse_hook_mgr.set_enabled(current_mouse_interaction);
+                }
+            }
+
+            // Poll mouse position if hook is active and dispatch normalized coordinates to active host
+            if mouse_hook_mgr.is_active() {
+                if let Some((mx, my)) = MouseHookManager::poll_position() {
+                    for (i, mon) in monitors.iter().enumerate() {
+                        if mx >= mon.x && mx < mon.x + mon.width && my >= mon.y && my < mon.y + mon.height {
+                            let norm_x = ((mx - mon.x) as f32 / mon.width as f32).clamp(0.0, 1.0);
+                            let norm_y = ((my - mon.y) as f32 / mon.height as f32).clamp(0.0, 1.0);
+                            if let Some(host) = hosts.get_mut(i) {
+                                host.update_mouse(norm_x, norm_y);
+                            }
+                        }
+                    }
+                }
+            }
+
             // Update crossfade animation step for all hosts
             for h in &mut hosts {
                 h.update();
@@ -1307,6 +1360,7 @@ fn run_daemon() -> Result<()> {
         }
     }
 
+    mouse_hook_mgr.set_enabled(false);
     hotkey_manager.lock().unwrap().unregister_all();
 
     // Save final player state to DB KV

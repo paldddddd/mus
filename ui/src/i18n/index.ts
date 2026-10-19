@@ -146,6 +146,12 @@ export const translations = {
     visualizer_height: 'Высота слоя',
     visualizer_opacity: 'Прозрачность слоя',
     visualizer_saved_toast: 'Параметры визуализатора сохранены!',
+
+    // Mouse Interaction
+    mouse_title: 'Реакция обоев на курсор мыши',
+    mouse_subtitle: 'Интерактивная реакция шейдеров WGSL и WebGL на движение курсора при видимом рабочем столе (0% нагрузки когда окна открыты).',
+    mouse_enabled: 'Включить интерактивность курсора на рабочем столе',
+    mouse_saved_toast: 'Настройки реакции на мышь сохранены!',
   },
   en: {
     // Navigation
@@ -292,5 +298,11 @@ export const translations = {
     visualizer_height: 'Layer Height',
     visualizer_opacity: 'Layer Opacity',
     visualizer_saved_toast: 'Wallpaper visualizer settings saved!',
+
+    // Mouse Interaction
+    mouse_title: 'Desktop Mouse Reaction',
+    mouse_subtitle: 'Interactive cursor steering and wave ripples for WGSL shaders and WebGL wallpapers when desktop is visible (0% CPU when windows open).',
+    mouse_enabled: 'Enable cursor interaction on desktop',
+    mouse_saved_toast: 'Mouse reaction settings saved!',
   },
 };

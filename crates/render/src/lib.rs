@@ -24,6 +24,9 @@ pub trait Renderer: Send {
 
     /// Unload resources and release memory.
     fn unload(&mut self) -> Result<()>;
+
+    /// Update interactive cursor position (normalized 0.0 .. 1.0) if supported by renderer.
+    fn update_mouse(&mut self, _x: f32, _y: f32) {}
 }
 
 pub use crossfade::{ActiveLayer, DualLayerHost};
