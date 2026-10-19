@@ -1,11 +1,13 @@
 //! Common types, error definitions, and IPC contracts for wallmus.
 
 pub mod config;
+pub mod ipc;
 pub mod models;
 pub mod normalize;
 pub mod paths;
 
 pub use config::{AppConfig, GovernorConfig, MusicConfig, MusicSource, WidgetConfig};
+pub use ipc::{send_request, IpcError, IpcRequest, IpcResponse, PIPE_NAME};
 pub use models::{BindingItem, BindingScope, PlaylistItem, TrackItem, WallpaperItem, WallpaperKind};
 pub use paths::*;
 
