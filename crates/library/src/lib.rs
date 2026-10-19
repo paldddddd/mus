@@ -1,5 +1,9 @@
 //! SQLite storage and wallpaper metadata management.
 
+pub mod track_id;
+
+pub use track_id::compute_track_id;
+
 use anyhow::{Context, Result};
 use common::{db_path, ensure_app_dirs, WallpaperItem};
 use rusqlite::{params, Connection};

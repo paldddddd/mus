@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod models;
+pub mod normalize;
 pub mod paths;
 
 pub use config::{AppConfig, GovernorConfig, WidgetConfig};
