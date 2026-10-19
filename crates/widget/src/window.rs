@@ -122,7 +122,7 @@ impl WidgetWindow {
             let surface = ArgbSurface::new(w, h);
             let painter = WidgetPainter::new();
 
-            let instance = Self {
+            let mut instance = Box::new(Self {
                 hwnd,
                 _gdi_guard: gdi_guard,
                 hdc_screen,
@@ -134,17 +134,17 @@ impl WidgetWindow {
                 config,
                 on_action,
                 on_moved,
-            };
+            });
 
             // Set user data pointer in HWND for WndProc callback dispatch
-            let ptr = &instance as *const Self as isize;
+            let ptr = &mut *instance as *mut Self as isize;
             windows::Win32::UI::WindowsAndMessaging::SetWindowLongPtrW(
                 hwnd,
                 windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA,
                 ptr,
             );
 
-            Ok(instance)
+            Ok(*instance)
         }
     }
 
@@ -154,12 +154,13 @@ impl WidgetWindow {
             (cfg.x, cfg.y, cfg.width, cfg.height)
         };
 
-        if let Ok(gdi) = GdiPlusRenderer::from_hdc(self.hdc_mem) {
+        // 1. Render background card, buttons, progress bar and spectrum into surface
+        {
             let cfg_guard = self.config.lock().unwrap();
-            self.painter.paint(&mut self.surface, &gdi, &cfg_guard, track, spectrum);
+            self.painter.paint_surface(&mut self.surface, &cfg_guard, track, spectrum);
         }
 
-        // Copy surface pixels to DIB section
+        // 2. Blit surface pixels to DIB section (hdc_mem)
         unsafe {
             if !self.dib_bits.is_null() && self.surface.pixels.len() == (w * h) as usize {
                 std::ptr::copy_nonoverlapping(
@@ -168,7 +169,16 @@ impl WidgetWindow {
                     self.surface.pixels.len(),
                 );
             }
+        }
 
+        // 3. Render crisp anti-aliased text and album art on top via GDI+
+        if let Ok(gdi) = GdiPlusRenderer::from_hdc(self.hdc_mem) {
+            let cfg_guard = self.config.lock().unwrap();
+            self.painter.paint_foreground(&gdi, &cfg_guard, track);
+        }
+
+        // 4. Update layered window with per-pixel alpha blending
+        unsafe {
             let pt_dst = POINT { x, y };
             let size_dst = SIZE {
                 cx: w as i32,

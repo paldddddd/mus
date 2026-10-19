@@ -1158,7 +1158,9 @@ fn run_daemon() -> Result<()> {
                 gov.take_event_trigger()
             };
 
-            if gov_triggered || last_gov_check.elapsed() >= Duration::from_millis(1000) {
+            if (gov_triggered && last_gov_check.elapsed() >= Duration::from_millis(250))
+                || last_gov_check.elapsed() >= Duration::from_millis(1000)
+            {
                 last_gov_check = Instant::now();
 
                 if let Some(primary_mon) = monitors.first() {

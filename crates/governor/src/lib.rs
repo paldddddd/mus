@@ -18,7 +18,7 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowLongW, GetWindowRect,
     GetWindowThreadProcessId, IsIconic, IsWindowVisible,
-    EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND,
+    EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
     GWL_EXSTYLE, WINEVENT_OUTOFCONTEXT, WS_EX_TOOLWINDOW,
 };
 
@@ -84,10 +84,10 @@ impl Governor {
     /// Start event-driven hooks (SetWinEventHook for foreground and window move/minimize).
     pub fn start_hooks(&mut self) -> Result<()> {
         unsafe {
-            // Hook foreground window changes and minimize start/end
+            // Hook foreground window changes, moves/resizes, and minimize/restore events
             let hook = SetWinEventHook(
                 EVENT_SYSTEM_FOREGROUND,
-                EVENT_OBJECT_LOCATIONCHANGE,
+                EVENT_SYSTEM_MINIMIZEEND,
                 None,
                 Some(win_event_proc),
                 0,

@@ -35,8 +35,16 @@ pub struct TrackMetadata {
     pub cover_path: Option<String>,
 }
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
 pub struct SmtcManager {
     manager: Option<GlobalSystemMediaTransportControlsSessionManager>,
+    cached_track: Arc<Mutex<Option<TrackMetadata>>>,
+    should_stop: Arc<AtomicBool>,
+    _worker: Option<JoinHandle<()>>,
 }
 
 impl SmtcManager {
@@ -55,19 +63,46 @@ impl SmtcManager {
             }
         };
 
-        Self { manager }
+        let cached_track = Arc::new(Mutex::new(None));
+        let should_stop = Arc::new(AtomicBool::new(false));
+
+        let worker = if let Some(ref mgr) = manager {
+            let mgr_clone = mgr.clone();
+            let cache_clone = cached_track.clone();
+            let stop_clone = should_stop.clone();
+
+            Some(
+                thread::Builder::new()
+                    .name("wallmus-smtc-poller".to_string())
+                    .spawn(move || {
+                        while !stop_clone.load(Ordering::Relaxed) {
+                            let track = Self::fetch_track_from_session(&mgr_clone);
+                            *cache_clone.lock().unwrap() = track;
+                            thread::sleep(Duration::from_millis(300));
+                        }
+                    })
+                    .expect("Failed to spawn SMTC poller thread"),
+            )
+        } else {
+            None
+        };
+
+        Self {
+            manager,
+            cached_track,
+            should_stop,
+            _worker: worker,
+        }
     }
 
     pub fn get_current_track(&self) -> Result<Option<TrackMetadata>> {
-        let mgr = match &self.manager {
-            Some(m) => m,
-            None => return Ok(None),
-        };
+        Ok(self.cached_track.lock().unwrap().clone())
+    }
 
-        let session = match mgr.GetCurrentSession() {
-            Ok(s) => s,
-            Err(_) => return Ok(None),
-        };
+    fn fetch_track_from_session(
+        mgr: &GlobalSystemMediaTransportControlsSessionManager,
+    ) -> Option<TrackMetadata> {
+        let session = mgr.GetCurrentSession().ok()?;
 
         let source_app = session
             .SourceAppUserModelId()
@@ -92,10 +127,10 @@ impl SmtcManager {
                 Ok(props) => props,
                 Err(e) => {
                     debug!("Failed to get SMTC media properties: {e}");
-                    return Ok(None);
+                    return None;
                 }
             },
-            Err(_) => return Ok(None),
+            Err(_) => return None,
         };
 
         let title = media_props.Title().map(|s| s.to_string()).unwrap_or_default();
@@ -112,9 +147,9 @@ impl SmtcManager {
         };
 
         // Extract thumbnail and save to covers_dir() if available
-        let cover_path = self.save_thumbnail(&media_props, &title, &artist);
+        let cover_path = Self::save_thumbnail(&media_props, &title, &artist);
 
-        Ok(Some(TrackMetadata {
+        Some(TrackMetadata {
             title,
             artist,
             album_artist,
@@ -124,11 +159,10 @@ impl SmtcManager {
             position_ms,
             duration_ms,
             cover_path,
-        }))
+        })
     }
 
     fn save_thumbnail(
-        &self,
         media_props: &windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties,
         title: &str,
         artist: &str,
@@ -195,6 +229,12 @@ impl SmtcManager {
         let mgr = self.manager.as_ref().context("SMTC SessionManager is not available")?;
         let session = mgr.GetCurrentSession().context("No active media session")?;
         action(&session)
+    }
+}
+
+impl Drop for SmtcManager {
+    fn drop(&mut self) {
+        self.should_stop.store(true, Ordering::Relaxed);
     }
 }
 

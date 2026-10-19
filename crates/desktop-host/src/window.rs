@@ -15,7 +15,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     RegisterClassExW, RegisterWindowMessageW, SetLayeredWindowAttributes, SetWindowLongPtrW,
     SetWindowPos, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, GWL_EXSTYLE, LWA_ALPHA, SWP_NOACTIVATE,
     SWP_NOMOVE, SWP_NOSIZE, WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND,
-    WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+    WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+    WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 static CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
@@ -71,10 +72,17 @@ impl DesktopHostWindow {
             RegisterWindowMessageW(w!("TaskbarCreated"))
         };
 
-        // Create window borderless and no-activate with layered window support for crossfade
+        let is_video = matches!(render_mode, RenderMode::Video);
+        let ex_style = if is_video {
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP
+        } else {
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED
+        };
+
+        // Create window borderless and no-activate
         let hwnd = unsafe {
             CreateWindowExW(
-                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
+                ex_style,
                 CLASS_NAME,
                 w!("wallmus Host Window"),
                 WS_POPUP,
@@ -94,9 +102,11 @@ impl DesktopHostWindow {
             bail!("CreateWindowExW returned null HWND for monitor: {}", monitor.name);
         }
 
-        // Initialize opacity to full (255)
-        unsafe {
-            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
+        // Initialize opacity for non-video layered windows
+        if !is_video {
+            unsafe {
+                let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
+            }
         }
 
         let mut host = Box::new(Self {
@@ -128,6 +138,24 @@ impl DesktopHostWindow {
 
     /// Set window opacity (0 = transparent, 255 = fully opaque) for crossfade.
     pub fn set_alpha(&self, alpha: u8) -> Result<()> {
+        if self.render_mode == RenderMode::Video {
+            // For hardware DirectX 11 / libmpv swapchain, toggle visibility to prevent breaking D3D11 surface
+            unsafe {
+                if alpha == 0 {
+                    let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(
+                        self.hwnd,
+                        windows::Win32::UI::WindowsAndMessaging::SW_HIDE,
+                    );
+                } else {
+                    let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(
+                        self.hwnd,
+                        windows::Win32::UI::WindowsAndMessaging::SW_SHOWNOACTIVATE,
+                    );
+                }
+            }
+            return Ok(());
+        }
+
         unsafe {
             let ex_style = GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE);
             if (ex_style as u32 & WS_EX_LAYERED.0) == 0 {
