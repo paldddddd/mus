@@ -102,6 +102,22 @@ export const translations = {
     setting_logs: 'Журнал работы (Логи)',
     open_logs_btn: 'Открыть папку логов',
 
+    // Hotkeys Section
+    hotkeys_title: 'Глобальные горячие клавиши',
+    hotkeys_subtitle: 'Работают отовсюду в Windows, даже когда приложение свёрнуто или запущены игры.',
+    hk_toggle_playback: 'Воспроизведение / Пауза музыки',
+    hk_next_track: 'Следующий трек',
+    hk_prev_track: 'Предыдущий трек',
+    hk_toggle_wallpaper_pause: 'Пауза / Запуск живых обоев',
+    hk_next_wallpaper: 'Принудительно сменить обои',
+    hk_toggle_widget: 'Показать / Скрыть виджет',
+    hk_recording_hint: 'Нажмите комбинацию клавиш (например Ctrl+Alt+Space)...',
+    hk_press_to_change: 'Нажмите для изменения',
+    hk_reset_btn: 'Сбросить по умолчанию',
+    hk_status_registered: 'Активна',
+    hk_status_conflict: 'Конфликт с другой программой',
+    hk_saved_toast: 'Горячие клавиши обновлены и активны!',
+
     // Widget View
     widget_toggle: 'Плавающий виджет на рабочем столе',
     widget_pinned: 'Закрепить положение',
@@ -211,6 +227,22 @@ export const translations = {
     theme_light: 'Light Mode',
     setting_logs: 'Application Logs',
     open_logs_btn: 'Open Logs Folder',
+
+    // Hotkeys Section
+    hotkeys_title: 'Global Hotkeys',
+    hotkeys_subtitle: 'Work system-wide across Windows, even when minimized or inside games.',
+    hk_toggle_playback: 'Play / Pause Music',
+    hk_next_track: 'Next Track',
+    hk_prev_track: 'Previous Track',
+    hk_toggle_wallpaper_pause: 'Pause / Resume Live Wallpapers',
+    hk_next_wallpaper: 'Force Switch to Next Wallpaper',
+    hk_toggle_widget: 'Show / Hide Desktop Widget',
+    hk_recording_hint: 'Press shortcut combination (e.g. Ctrl+Alt+Space)...',
+    hk_press_to_change: 'Click to record shortcut',
+    hk_reset_btn: 'Reset to Defaults',
+    hk_status_registered: 'Active',
+    hk_status_conflict: 'Conflict with another application',
+    hk_saved_toast: 'Hotkeys updated and applied!',
 
     // Widget View
     widget_toggle: 'Floating Desktop Music Widget',

@@ -1,4 +1,5 @@
 mod autostart;
+mod hotkeys;
 mod ipc;
 mod single_instance;
 mod tray;
@@ -11,6 +12,7 @@ use desktop_host::{
     apply_eco_profile, collect_diag, enumerate_monitors, DesktopHostWindow, RenderMode,
 };
 use governor::{Governor, GovernorState};
+use hotkeys::{HotkeyAction, HotkeyManager};
 use ipc::{send_request, IpcHandler, IpcServer};
 use library::{resolve, Database, LibraryWatcher, TrackContext};
 use media::import_wallpaper;
@@ -26,23 +28,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 use tray::SystemTray;
-use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT,
-};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_HOTKEY, WM_QUIT,
 };
-
-const HOTKEY_MEDIA_NEXT: i32 = 1001;
-const HOTKEY_MEDIA_PREV: i32 = 1002;
-const HOTKEY_MEDIA_STOP: i32 = 1003;
-const HOTKEY_MEDIA_PLAY_PAUSE: i32 = 1004;
-
-const VK_MEDIA_NEXT_TRACK: u32 = 0xB0;
-const VK_MEDIA_PREV_TRACK: u32 = 0xB1;
-const VK_MEDIA_STOP: u32 = 0xB2;
-const VK_MEDIA_PLAY_PAUSE: u32 = 0xB3;
 
 /// Context data for pending track change debounce.
 #[derive(Debug, Clone)]
@@ -78,6 +66,8 @@ struct DaemonContext {
     audio: Arc<AudioEngine>,
     watcher: Arc<Mutex<Option<LibraryWatcher>>>,
     pending_track_change: Arc<Mutex<Option<(TrackContextData, Instant)>>>,
+    hotkey_manager: Arc<Mutex<HotkeyManager>>,
+    pending_hotkey_reload: Arc<AtomicBool>,
 }
 
 impl IpcHandler for DaemonContext {
@@ -638,6 +628,41 @@ impl IpcHandler for DaemonContext {
                 *self.pending_track_change.lock().unwrap() = Some((data, Instant::now()));
                 Ok(serde_json::json!({ "status": "change_triggered" }))
             }
+            "hotkeys.get" => {
+                let cfg = self.config.lock().unwrap().hotkeys.clone();
+                let status = self.hotkey_manager.lock().unwrap().get_status();
+                Ok(serde_json::json!({
+                    "hotkeys": cfg,
+                    "status": status,
+                }))
+            }
+            "hotkeys.set" => {
+                let hk_val = params.get("hotkeys").context("Missing 'hotkeys' object")?;
+                let new_hk: common::HotkeysConfig = serde_json::from_value(hk_val.clone())?;
+                {
+                    let mut cfg = self.config.lock().unwrap();
+                    cfg.hotkeys = new_hk.clone();
+                    let _ = cfg.save();
+                }
+                self.pending_hotkey_reload.store(true, Ordering::SeqCst);
+                Ok(serde_json::json!({
+                    "status": "pending_reload",
+                    "hotkeys": new_hk,
+                }))
+            }
+            "hotkeys.reset" => {
+                let def_hk = common::HotkeysConfig::default();
+                {
+                    let mut cfg = self.config.lock().unwrap();
+                    cfg.hotkeys = def_hk.clone();
+                    let _ = cfg.save();
+                }
+                self.pending_hotkey_reload.store(true, Ordering::SeqCst);
+                Ok(serde_json::json!({
+                    "status": "reset",
+                    "hotkeys": def_hk,
+                }))
+            }
             _ => bail!("Unknown IPC method: {}", method),
         }
     }
@@ -839,6 +864,15 @@ fn run_daemon() -> Result<()> {
         let _ = w.update_folders(&folders);
     }
     let watcher_arc = Arc::new(Mutex::new(watcher));
+    let hotkey_manager = Arc::new(Mutex::new(HotkeyManager::new()));
+    let pending_hotkey_reload = Arc::new(AtomicBool::new(false));
+
+    // Initial hotkey registration on main thread
+    {
+        let initial_hk_cfg = config.lock().unwrap().hotkeys.clone();
+        let status = hotkey_manager.lock().unwrap().register_all(&initial_hk_cfg);
+        info!("Registered global hotkeys: {:?}", status);
+    }
 
     let ctx = Arc::new(DaemonContext {
         db: db.clone(),
@@ -849,19 +883,13 @@ fn run_daemon() -> Result<()> {
         audio: audio.clone(),
         watcher: watcher_arc.clone(),
         pending_track_change: pending_track_change.clone(),
+        hotkey_manager: hotkey_manager.clone(),
+        pending_hotkey_reload: pending_hotkey_reload.clone(),
     });
 
     // Start IPC Server
     let ipc_server = IpcServer::start(ctx.clone()).context("Failed to start IPC server")?;
     info!("IPC server listening on {}", ipc::PIPE_NAME);
-
-    // Register global media hotkeys (VK_MEDIA_*)
-    unsafe {
-        let _ = RegisterHotKey(HWND::default(), HOTKEY_MEDIA_NEXT, MOD_NOREPEAT, VK_MEDIA_NEXT_TRACK);
-        let _ = RegisterHotKey(HWND::default(), HOTKEY_MEDIA_PREV, MOD_NOREPEAT, VK_MEDIA_PREV_TRACK);
-        let _ = RegisterHotKey(HWND::default(), HOTKEY_MEDIA_STOP, MOD_NOREPEAT, VK_MEDIA_STOP);
-        let _ = RegisterHotKey(HWND::default(), HOTKEY_MEDIA_PLAY_PAUSE, MOD_NOREPEAT, VK_MEDIA_PLAY_PAUSE);
-    }
 
     // Create System Tray
     let tray = SystemTray::create(false).context("Failed to create system tray")?;
@@ -934,6 +962,13 @@ fn run_daemon() -> Result<()> {
         let mut msg = MSG::default();
 
         while !should_quit.load(Ordering::SeqCst) {
+            // Check dynamic hotkeys reload from IPC
+            if pending_hotkey_reload.swap(false, Ordering::SeqCst) {
+                let hk_cfg = config.lock().unwrap().hotkeys.clone();
+                let status = hotkey_manager.lock().unwrap().register_all(&hk_cfg);
+                info!("Global hotkeys reloaded on main thread: {:?}", status);
+            }
+
             // Process Win32 messages
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                 if msg.message == WM_QUIT {
@@ -941,37 +976,66 @@ fn run_daemon() -> Result<()> {
                     break;
                 } else if msg.message == WM_HOTKEY {
                     let id = msg.wParam.0 as i32;
-                    let source = config.lock().unwrap().music.source;
-                    match id {
-                        HOTKEY_MEDIA_PLAY_PAUSE => {
-                            if source == MusicSource::Local {
-                                audio.player.toggle_play_pause();
-                            } else {
-                                let _ = audio.smtc.toggle_play_pause();
+                    if let Some(action) = HotkeyAction::from_id(id) {
+                        let source = config.lock().unwrap().music.source;
+                        match action {
+                            HotkeyAction::TogglePlayback | HotkeyAction::MediaPlayPause => {
+                                if source == MusicSource::Local {
+                                    audio.player.toggle_play_pause();
+                                } else {
+                                    let _ = audio.smtc.toggle_play_pause();
+                                }
+                            }
+                            HotkeyAction::NextTrack | HotkeyAction::MediaNext => {
+                                if source == MusicSource::Local {
+                                    let _ = audio.player.next();
+                                } else {
+                                    let _ = audio.smtc.skip_next();
+                                }
+                            }
+                            HotkeyAction::PrevTrack | HotkeyAction::MediaPrev => {
+                                if source == MusicSource::Local {
+                                    let _ = audio.player.previous();
+                                } else {
+                                    let _ = audio.smtc.skip_previous();
+                                }
+                            }
+                            HotkeyAction::MediaStop => {
+                                if source == MusicSource::Local {
+                                    audio.player.stop();
+                                } else {
+                                    let _ = audio.smtc.pause();
+                                }
+                            }
+                            HotkeyAction::ToggleWallpaperPause => {
+                                let gov = governor_arc.lock().unwrap();
+                                let current = gov.is_manual_paused();
+                                gov.set_manual_pause(!current);
+                                tray.update_state(!current);
+                                info!("Hotkey: Toggle wallpaper pause -> {}", !current);
+                            }
+                            HotkeyAction::NextWallpaper => {
+                                info!("Hotkey: Next wallpaper requested");
+                                let list = db.list_wallpapers().unwrap_or_default();
+                                if list.len() > 1 {
+                                    let mut active = active_wallpaper.lock().unwrap();
+                                    let next = list
+                                        .iter()
+                                        .find(|w| active.as_ref().map(|a| a.id != w.id).unwrap_or(true))
+                                        .cloned();
+                                    if let Some(next_wp) = next {
+                                        *active = Some(next_wp);
+                                    }
+                                }
+                            }
+                            HotkeyAction::ToggleWidget => {
+                                let mut w_cfg = config.lock().unwrap();
+                                w_cfg.widget.enabled = !w_cfg.widget.enabled;
+                                let is_en = w_cfg.widget.enabled;
+                                let _ = w_cfg.save();
+                                info!("Hotkey: Toggle desktop widget -> {is_en}");
                             }
                         }
-                        HOTKEY_MEDIA_NEXT => {
-                            if source == MusicSource::Local {
-                                let _ = audio.player.next();
-                            } else {
-                                let _ = audio.smtc.skip_next();
-                            }
-                        }
-                        HOTKEY_MEDIA_PREV => {
-                            if source == MusicSource::Local {
-                                let _ = audio.player.previous();
-                            } else {
-                                let _ = audio.smtc.skip_previous();
-                            }
-                        }
-                        HOTKEY_MEDIA_STOP => {
-                            if source == MusicSource::Local {
-                                audio.player.stop();
-                            } else {
-                                let _ = audio.smtc.pause();
-                            }
-                        }
-                        _ => {}
                     }
                 }
                 let _ = TranslateMessage(&msg);
@@ -1189,12 +1253,7 @@ fn run_daemon() -> Result<()> {
         }
     }
 
-    unsafe {
-        let _ = UnregisterHotKey(HWND::default(), HOTKEY_MEDIA_NEXT);
-        let _ = UnregisterHotKey(HWND::default(), HOTKEY_MEDIA_PREV);
-        let _ = UnregisterHotKey(HWND::default(), HOTKEY_MEDIA_STOP);
-        let _ = UnregisterHotKey(HWND::default(), HOTKEY_MEDIA_PLAY_PAUSE);
-    }
+    hotkey_manager.lock().unwrap().unregister_all();
 
     // Save final player state to DB KV
     let state = audio.player.get_state();

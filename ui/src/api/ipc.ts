@@ -253,6 +253,47 @@ function mockDaemonResponse<T>(method: string, params: any): T {
         gpu_adapter: 'NVIDIA GeForce RTX 4070 Laptop GPU',
         libmpv_version: 'libmpv 0.38.0',
       } as unknown as T;
+    case 'hotkeys.get':
+      return {
+        hotkeys: mockConfig.hotkeys || {
+          toggle_playback: 'Ctrl+Alt+Space',
+          next_track: 'Ctrl+Alt+Right',
+          prev_track: 'Ctrl+Alt+Left',
+          toggle_wallpaper_pause: 'Ctrl+Alt+P',
+          next_wallpaper: 'Ctrl+Alt+W',
+          toggle_widget: 'Ctrl+Alt+M',
+        },
+        status: {
+          toggle_playback: true,
+          next_track: true,
+          prev_track: true,
+          toggle_wallpaper_pause: true,
+          next_wallpaper: true,
+          toggle_widget: true,
+        },
+      } as unknown as T;
+    case 'hotkeys.set': {
+      const p = params as { hotkeys: any };
+      mockConfig.hotkeys = p.hotkeys;
+      return {
+        status: 'pending_reload',
+        hotkeys: p.hotkeys,
+      } as unknown as T;
+    }
+    case 'hotkeys.reset': {
+      mockConfig.hotkeys = {
+        toggle_playback: 'Ctrl+Alt+Space',
+        next_track: 'Ctrl+Alt+Right',
+        prev_track: 'Ctrl+Alt+Left',
+        toggle_wallpaper_pause: 'Ctrl+Alt+P',
+        next_wallpaper: 'Ctrl+Alt+W',
+        toggle_widget: 'Ctrl+Alt+M',
+      };
+      return {
+        status: 'reset',
+        hotkeys: mockConfig.hotkeys,
+      } as unknown as T;
+    }
     default:
       return {} as unknown as T;
   }

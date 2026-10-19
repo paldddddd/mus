@@ -87,6 +87,43 @@ pub struct MusicConfig {
     pub source: MusicSource,
 }
 
+/// Global keyboard shortcuts configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HotkeysConfig {
+    #[serde(default = "default_hotkey_toggle_playback")]
+    pub toggle_playback: String,
+    #[serde(default = "default_hotkey_next_track")]
+    pub next_track: String,
+    #[serde(default = "default_hotkey_prev_track")]
+    pub prev_track: String,
+    #[serde(default = "default_hotkey_toggle_wallpaper_pause")]
+    pub toggle_wallpaper_pause: String,
+    #[serde(default = "default_hotkey_next_wallpaper")]
+    pub next_wallpaper: String,
+    #[serde(default = "default_hotkey_toggle_widget")]
+    pub toggle_widget: String,
+}
+
+fn default_hotkey_toggle_playback() -> String { "Ctrl+Alt+Space".to_string() }
+fn default_hotkey_next_track() -> String { "Ctrl+Alt+Right".to_string() }
+fn default_hotkey_prev_track() -> String { "Ctrl+Alt+Left".to_string() }
+fn default_hotkey_toggle_wallpaper_pause() -> String { "Ctrl+Alt+P".to_string() }
+fn default_hotkey_next_wallpaper() -> String { "Ctrl+Alt+W".to_string() }
+fn default_hotkey_toggle_widget() -> String { "Ctrl+Alt+M".to_string() }
+
+impl Default for HotkeysConfig {
+    fn default() -> Self {
+        Self {
+            toggle_playback: default_hotkey_toggle_playback(),
+            next_track: default_hotkey_next_track(),
+            prev_track: default_hotkey_prev_track(),
+            toggle_wallpaper_pause: default_hotkey_toggle_wallpaper_pause(),
+            next_wallpaper: default_hotkey_next_wallpaper(),
+            toggle_widget: default_hotkey_toggle_widget(),
+        }
+    }
+}
+
 /// Global application configuration stored in `%APPDATA%/wallmus/config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -103,6 +140,8 @@ pub struct AppConfig {
     pub music: MusicConfig,
     #[serde(default = "default_crossfade_duration")]
     pub crossfade_duration_ms: u64,
+    #[serde(default)]
+    pub hotkeys: HotkeysConfig,
 }
 
 fn default_crossfade_duration() -> u64 {
@@ -122,6 +161,7 @@ impl Default for AppConfig {
             governor: GovernorConfig::default(),
             widget: WidgetConfig::default(),
             music: MusicConfig::default(),
+            hotkeys: HotkeysConfig::default(),
         }
     }
 }

@@ -72,6 +72,15 @@ export interface MusicConfig {
   source: MusicSource;
 }
 
+export interface HotkeysConfig {
+  toggle_playback: string;
+  next_track: string;
+  prev_track: string;
+  toggle_wallpaper_pause: string;
+  next_wallpaper: string;
+  toggle_widget: string;
+}
+
 export interface AppConfig {
   autostart: boolean;
   language: string;
@@ -79,9 +88,11 @@ export interface AppConfig {
   follow_music: boolean;
   active_wallpaper_id?: string;
   fps_limit: number;
+  crossfade_duration_ms?: number;
   governor: GovernorConfig;
   widget: WidgetConfig;
   music: MusicConfig;
+  hotkeys?: HotkeysConfig;
 }
 
 export interface MonitorInfo {
