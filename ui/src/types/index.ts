@@ -140,3 +140,13 @@ export interface CurrentTrackInfo {
   duration_ms?: number;
   cover_path?: string;
 }
+
+export interface UpdateInfo {
+  current_version: string;
+  latest_version: string;
+  update_available: boolean;
+  release_notes: string;
+  download_url?: string;
+  published_at?: string;
+  sha256?: string;
+}

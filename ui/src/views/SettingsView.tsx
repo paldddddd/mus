@@ -14,9 +14,11 @@ import {
   Waves,
   Sparkles,
   MousePointer,
+  RefreshCw,
+  Download,
 } from 'lucide-react';
 import { Language, translations } from '../i18n';
-import { HotkeysConfig, WallpaperVisualizerConfig } from '../types';
+import { HotkeysConfig, WallpaperVisualizerConfig, UpdateInfo } from '../types';
 import { requestDaemon } from '../api/ipc';
 
 interface SettingsViewProps {
@@ -66,6 +68,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [mouseEnabled, setMouseEnabled] = useState<boolean>(true);
   const [previewCoord, setPreviewCoord] = useState<{ x: number; y: number }>({ x: 50, y: 50 });
 
+  const [isPortable, setIsPortable] = useState<boolean>(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState<boolean>(false);
+
   const fetchVisualizer = useCallback(async () => {
     try {
       const resp = await requestDaemon<WallpaperVisualizerConfig>('visualizer.getConfig');
@@ -111,6 +117,31 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
+  const fetchPortableStatus = useCallback(async () => {
+    try {
+      const resp = await requestDaemon<{ portable: boolean }>('app.isPortable');
+      if (resp) {
+        setIsPortable(resp.portable);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch portable status:', err);
+    }
+  }, []);
+
+  const handleCheckUpdate = async () => {
+    setIsCheckingUpdate(true);
+    try {
+      const info = await requestDaemon<UpdateInfo>('update.check');
+      if (info) {
+        setUpdateInfo(info);
+      }
+    } catch (err) {
+      console.error('Failed to check for updates:', err);
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
+
   const fetchHotkeys = useCallback(async () => {
     try {
       const resp = await requestDaemon<{ hotkeys: HotkeysConfig; status: Record<string, boolean> }>('hotkeys.get');
@@ -129,7 +160,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     fetchHotkeys();
     fetchVisualizer();
     fetchMouseConfig();
-  }, [fetchHotkeys, fetchVisualizer, fetchMouseConfig]);
+    fetchPortableStatus();
+  }, [fetchHotkeys, fetchVisualizer, fetchMouseConfig, fetchPortableStatus]);
 
   // Handle global key recording
   useEffect(() => {
@@ -692,6 +724,86 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {t.theme_light}
             </button>
           </div>
+        </div>
+
+        {/* Application Updates & Portability */}
+        <div className="glass-card" style={{ padding: '20px 24px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+              <RefreshCw size={20} color="#a855f7" className={isCheckingUpdate ? 'spin' : ''} />
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontWeight: 600, fontSize: '0.92rem' }}>{t.update_title}</span>
+                  <span
+                    style={{
+                      fontSize: '0.72rem',
+                      padding: '2px 8px',
+                      borderRadius: '12px',
+                      background: isPortable ? 'rgba(234, 179, 8, 0.2)' : 'rgba(59, 130, 246, 0.2)',
+                      color: isPortable ? '#eab308' : '#60a5fa',
+                      border: `1px solid ${isPortable ? 'rgba(234, 179, 8, 0.4)' : 'rgba(59, 130, 246, 0.4)'}`,
+                    }}
+                  >
+                    {isPortable ? t.update_portable_active : t.update_installed_mode}
+                  </span>
+                </div>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  {isPortable ? t.update_portable_desc : t.update_subtitle}
+                </p>
+              </div>
+            </div>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={handleCheckUpdate}
+              disabled={isCheckingUpdate}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+            >
+              <RefreshCw size={14} className={isCheckingUpdate ? 'spin' : ''} />
+              <span>{isCheckingUpdate ? t.update_checking : t.update_check_btn}</span>
+            </button>
+          </div>
+
+          {updateInfo && (
+            <div
+              style={{
+                marginTop: '16px',
+                padding: '14px 18px',
+                borderRadius: '8px',
+                background: updateInfo.update_available ? 'rgba(16, 185, 129, 0.1)' : 'rgba(255, 255, 255, 0.04)',
+                border: `1px solid ${updateInfo.update_available ? 'rgba(16, 185, 129, 0.3)' : 'rgba(255, 255, 255, 0.08)'}`,
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  {updateInfo.update_available ? (
+                    <Download size={16} color="#10b981" />
+                  ) : (
+                    <Check size={16} color="#10b981" />
+                  )}
+                  <span style={{ fontWeight: 600, fontSize: '0.88rem', color: updateInfo.update_available ? '#10b981' : 'var(--text-main)' }}>
+                    {updateInfo.update_available
+                      ? `${t.update_available}: v${updateInfo.latest_version}`
+                      : `${t.update_latest} (v${updateInfo.current_version})`}
+                  </span>
+                </div>
+                {updateInfo.download_url && (
+                  <a
+                    href={updateInfo.download_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn btn-primary btn-sm"
+                    style={{ textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}
+                  >
+                    <Download size={14} />
+                    <span>{t.update_download_btn}</span>
+                  </a>
+                )}
+              </div>
+              <div style={{ marginTop: '8px', fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
+                {updateInfo.release_notes}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Application Logs */}

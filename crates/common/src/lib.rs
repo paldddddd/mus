@@ -5,6 +5,7 @@ pub mod ipc;
 pub mod models;
 pub mod normalize;
 pub mod paths;
+pub mod update;
 
 pub use config::{
     AppConfig, GovernorConfig, HotkeysConfig, MusicConfig, MusicSource, WallpaperVisualizerConfig,
@@ -13,6 +14,7 @@ pub use config::{
 pub use ipc::{send_request, IpcError, IpcRequest, IpcResponse, PIPE_NAME};
 pub use models::{BindingItem, BindingScope, PlaylistItem, TrackItem, WallpaperItem, WallpaperKind};
 pub use paths::*;
+pub use update::*;
 
 use serde::{Deserialize, Serialize};
 

@@ -152,6 +152,19 @@ export const translations = {
     mouse_subtitle: 'Интерактивная реакция шейдеров WGSL и WebGL на движение курсора при видимом рабочем столе (0% нагрузки когда окна открыты).',
     mouse_enabled: 'Включить интерактивность курсора на рабочем столе',
     mouse_saved_toast: 'Настройки реакции на мышь сохранены!',
+
+    // Updates & Packaging
+    update_title: 'Обновления и статус приложения',
+    update_subtitle: 'Проверка новых версий на GitHub и состояние переносимости.',
+    update_check_btn: 'Проверить обновления',
+    update_checking: 'Проверка...',
+    update_latest: 'Установлена последняя версия',
+    update_available: 'Доступна новая версия',
+    update_notes_title: 'Список изменений:',
+    update_download_btn: 'Скачать установщик',
+    update_portable_active: 'Портативный режим (portable.dat)',
+    update_portable_desc: 'Данные хранятся локально в папке приложения без использования реестра.',
+    update_installed_mode: 'Режим установки в систему (per-user)',
   },
   en: {
     // Navigation
@@ -304,5 +317,18 @@ export const translations = {
     mouse_subtitle: 'Interactive cursor steering and wave ripples for WGSL shaders and WebGL wallpapers when desktop is visible (0% CPU when windows open).',
     mouse_enabled: 'Enable cursor interaction on desktop',
     mouse_saved_toast: 'Mouse reaction settings saved!',
+
+    // Updates & Packaging
+    update_title: 'Application Updates & Packaging',
+    update_subtitle: 'Check for new releases on GitHub and runtime portability status.',
+    update_check_btn: 'Check for Updates',
+    update_checking: 'Checking...',
+    update_latest: 'You have the latest version',
+    update_available: 'New version available',
+    update_notes_title: 'Changelog:',
+    update_download_btn: 'Download Installer',
+    update_portable_active: 'Portable Mode Active (portable.dat)',
+    update_portable_desc: 'All user data is stored locally in the application folder with zero registry traces.',
+    update_installed_mode: 'Standard Per-User Installation',
   },
 };

@@ -4,6 +4,7 @@ mod ipc;
 mod mouse_hook;
 mod single_instance;
 mod tray;
+mod updater;
 
 use anyhow::{bail, Context, Result};
 use audio_engine::AudioEngine;
@@ -696,6 +697,25 @@ impl IpcHandler for DaemonContext {
                     let _ = cfg.save();
                 }
                 Ok(serde_json::json!({ "enabled": enabled }))
+            }
+            "app.isPortable" => {
+                Ok(serde_json::json!({
+                    "portable": common::is_portable_mode(),
+                }))
+            }
+            "update.check" => {
+                let updater = crate::updater::Updater::new();
+                let info = updater.check()?;
+                Ok(serde_json::to_value(info)?)
+            }
+            "update.apply" => {
+                let installer_path_str = params
+                    .get("installer_path")
+                    .and_then(|v| v.as_str())
+                    .context("Missing 'installer_path' parameter")?;
+                let path = std::path::PathBuf::from(installer_path_str);
+                crate::updater::Updater::apply(&path)?;
+                Ok(serde_json::json!({ "status": "installer_launched" }))
             }
             _ => bail!("Unknown IPC method: {}", method),
         }
