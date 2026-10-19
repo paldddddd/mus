@@ -52,3 +52,37 @@ pub struct WallpaperItem {
     pub duration_ms: Option<u64>,
     pub created_at: i64,
 }
+
+/// Track stored in the music library. `id` is the blake3-based track_id.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrackItem {
+    pub id: String,
+    pub path: String,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub cover_path: Option<String>,
+    pub added_at: i64,
+}
+
+impl TrackItem {
+    /// Title for display: tag title or file stem.
+    pub fn display_title(&self) -> String {
+        if let Some(t) = self.title.as_ref().filter(|t| !t.trim().is_empty()) {
+            return t.clone();
+        }
+        std::path::Path::new(&self.path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| self.path.clone())
+    }
+}
+
+/// Playlist with ordered track ids.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlaylistItem {
+    pub id: i64,
+    pub name: String,
+    pub track_ids: Vec<String>,
+}

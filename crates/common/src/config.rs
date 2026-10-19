@@ -48,7 +48,9 @@ pub struct WidgetConfig {
 impl Default for WidgetConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            // Native widget is an experiment outside the spec; keep it off until the
+            // Stage 4 RSS measurement decides between Tauri and native widget.
+            enabled: false,
             x: 80,
             y: 80,
             width: 380,
@@ -63,6 +65,28 @@ impl Default for WidgetConfig {
     }
 }
 
+/// Which music source drives track events. Only one is active at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MusicSource {
+    /// Built-in player of local files.
+    #[default]
+    Local,
+    /// External players via Windows SMTC (Spotify, browser, ...).
+    External,
+}
+
+/// Music library settings.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MusicConfig {
+    /// Folders scanned recursively and watched for changes.
+    #[serde(default)]
+    pub folders: Vec<String>,
+    /// Active track source. External source is off by default.
+    #[serde(default)]
+    pub source: MusicSource,
+}
+
 /// Global application configuration stored in `%APPDATA%/wallmus/config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -75,6 +99,8 @@ pub struct AppConfig {
     pub governor: GovernorConfig,
     #[serde(default)]
     pub widget: WidgetConfig,
+    #[serde(default)]
+    pub music: MusicConfig,
 }
 
 impl Default for AppConfig {
@@ -88,6 +114,7 @@ impl Default for AppConfig {
             fps_limit: 30,
             governor: GovernorConfig::default(),
             widget: WidgetConfig::default(),
+            music: MusicConfig::default(),
         }
     }
 }

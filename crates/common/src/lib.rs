@@ -5,8 +5,8 @@ pub mod models;
 pub mod normalize;
 pub mod paths;
 
-pub use config::{AppConfig, GovernorConfig, WidgetConfig};
-pub use models::{WallpaperItem, WallpaperKind};
+pub use config::{AppConfig, GovernorConfig, MusicConfig, MusicSource, WidgetConfig};
+pub use models::{PlaylistItem, TrackItem, WallpaperItem, WallpaperKind};
 pub use paths::*;
 
 use serde::{Deserialize, Serialize};

@@ -1,20 +1,31 @@
 //! SQLite storage and wallpaper metadata management.
 
+pub mod scanner;
 pub mod track_id;
+mod tracks;
+pub mod watcher;
 
+pub use scanner::{read_track_metadata, scan_folders, ScanProgress, ScanSummary, AUDIO_EXTENSIONS};
 pub use track_id::compute_track_id;
+pub use watcher::LibraryWatcher;
 
 use anyhow::{Context, Result};
 use common::{db_path, ensure_app_dirs, WallpaperItem};
 use rusqlite::{params, Connection};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
 }
 
 impl Database {
+    /// Lock the connection; a poisoned mutex becomes an error instead of a panic.
+    fn conn(&self) -> Result<MutexGuard<'_, Connection>> {
+        self.conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Database mutex poisoned"))
+    }
     /// Open the SQLite database at default location `%APPDATA%/wallmus/library.db` and apply migrations.
     pub fn open_default() -> Result<Self> {
         ensure_app_dirs()?;
@@ -51,7 +62,7 @@ impl Database {
 
     /// Run migrations using PRAGMA user_version.
     pub fn migrate(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn()?;
 
         let current_version: u32 = conn
             .query_row("PRAGMA user_version;", [], |row| row.get(0))
@@ -128,7 +139,7 @@ impl Database {
 
     /// Insert or replace wallpaper metadata.
     pub fn save_wallpaper(&self, wp: &WallpaperItem) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn()?;
         conn.execute(
             r#"
             INSERT OR REPLACE INTO wallpapers (
@@ -157,7 +168,7 @@ impl Database {
 
     /// Retrieve all wallpapers ordered by creation time descending.
     pub fn list_wallpapers(&self) -> Result<Vec<WallpaperItem>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
                 r#"
@@ -195,7 +206,7 @@ impl Database {
 
     /// Delete wallpaper by id.
     pub fn delete_wallpaper(&self, id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn()?;
         conn.execute("DELETE FROM wallpapers WHERE id = ?1", params![id])
             .context("Failed to delete wallpaper")?;
         Ok(())
@@ -203,7 +214,7 @@ impl Database {
 
     /// Get value from KV store.
     pub fn get_kv(&self, key: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn()?;
         let res = conn.query_row("SELECT value FROM kv WHERE key = ?1", params![key], |row| {
             row.get(0)
         });
@@ -216,7 +227,7 @@ impl Database {
 
     /// Set value in KV store.
     pub fn set_kv(&self, key: &str, value: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn()?;
         conn.execute(
             "INSERT OR REPLACE INTO kv (key, value) VALUES (?1, ?2)",
             params![key, value],
