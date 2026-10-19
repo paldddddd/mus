@@ -87,18 +87,51 @@ fn test_local_player_queue_and_state() {
             id: "t1".to_string(),
             title: "Track 1".to_string(),
             artist: "Artist 1".to_string(),
+            album: Some("Album 1".to_string()),
             path: "C:\\fake\\track1.mp3".to_string(),
             duration_ms: 180000,
+            cover_path: None,
         },
         LocalTrack {
             id: "t2".to_string(),
             title: "Track 2".to_string(),
             artist: "Artist 2".to_string(),
+            album: Some("Album 2".to_string()),
             path: "C:\\fake\\track2.mp3".to_string(),
             duration_ms: 210000,
+            cover_path: None,
         },
     ];
 
-    let _ = player.set_queue(tracks, None);
+    let _ = player.set_queue(tracks.clone(), None);
     assert!(!player.is_playing());
+    assert_eq!(player.get_queue().len(), 2);
+
+    let state = player.get_state();
+    assert_eq!(state.queue.len(), 2);
+    assert!((state.volume - 0.4).abs() < 0.01);
+    assert_eq!(state.repeat_mode, RepeatMode::All);
+    assert!(state.shuffle);
+
+    // Test restoring state in a fresh player
+    let player2 = LocalPlayer::new();
+    player2.load_state(state);
+    assert_eq!(player2.get_queue().len(), 2);
+    assert_eq!(player2.get_repeat_mode(), RepeatMode::All);
+    assert!(player2.is_shuffle());
+
+    player2.enqueue(LocalTrack {
+        id: "t3".to_string(),
+        title: "Track 3".to_string(),
+        artist: "Artist 3".to_string(),
+        album: None,
+        path: "C:\\fake\\track3.mp3".to_string(),
+        duration_ms: 240000,
+        cover_path: None,
+    });
+    assert_eq!(player2.get_queue().len(), 3);
+
+    player2.clear_queue();
+    assert_eq!(player2.get_queue().len(), 0);
 }
+

@@ -3,7 +3,7 @@ pub mod smtc;
 pub mod visualizer;
 pub mod wallpaper_audio;
 
-pub use player::{LocalPlayer, LocalTrack, RepeatMode};
+pub use player::{LocalPlayer, LocalTrack, PlayerState, RepeatMode, TrackChangeCallback};
 pub use smtc::{PlaybackStatus, SmtcManager, TrackMetadata};
 pub use visualizer::Visualizer;
 pub use wallpaper_audio::{WallpaperAudio, WallpaperAudioConfig};
