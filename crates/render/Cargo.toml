@@ -11,6 +11,10 @@ thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 serde.workspace = true
+wgpu = "24"
+bytemuck = { version = "1", features = ["derive"] }
+raw-window-handle = "0.6"
+pollster = "0.4"
 
 [dependencies.windows]
 workspace = true

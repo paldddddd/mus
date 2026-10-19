@@ -308,7 +308,10 @@ fn setup_layer_renderer(
     layer.clear_paint_callback();
 
     let path = std::path::Path::new(&wallpaper.processed_path);
-    if !path.exists() {
+    let is_web_url = wallpaper.processed_path.starts_with("http://") || wallpaper.processed_path.starts_with("https://");
+    let is_builtin_shader = wallpaper.kind == "shader" && (wallpaper.processed_path.starts_with("builtin:") || wallpaper.processed_path.is_empty());
+
+    if !is_web_url && !is_builtin_shader && !path.exists() {
         tracing::warn!("Wallpaper media file not found: {}", wallpaper.processed_path);
         return Ok(Box::new(DummyRenderer));
     }
@@ -319,6 +322,16 @@ fn setup_layer_renderer(
                 .context("Failed to initialize MpvRenderer for crossfade layer")?;
             mpv.load(&wallpaper.processed_path)?;
             Ok(Box::new(mpv))
+        }
+        "html" => {
+            let mut html = crate::html::HtmlRenderer::new(layer.hwnd, monitor.width, monitor.height);
+            html.load(&wallpaper.processed_path)?;
+            Ok(Box::new(html))
+        }
+        "shader" => {
+            let mut shader = crate::shader::ShaderRenderer::new(layer.hwnd, monitor.width, monitor.height);
+            shader.load(&wallpaper.processed_path)?;
+            Ok(Box::new(shader))
         }
         _ => {
             let mut img = StaticImageRenderer::new(layer.hwnd, monitor.width, monitor.height);

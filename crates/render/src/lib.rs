@@ -1,7 +1,9 @@
 //! Render abstraction and implementations for static images and video live wallpapers.
 
 pub mod crossfade;
+pub mod html;
 pub mod mpv;
+pub mod shader;
 pub mod static_image;
 
 use anyhow::Result;
@@ -25,5 +27,7 @@ pub trait Renderer: Send {
 }
 
 pub use crossfade::{ActiveLayer, DualLayerHost};
+pub use html::HtmlRenderer;
 pub use mpv::{get_mpv_version, MpvRenderer};
+pub use shader::{ShaderRenderer, ShaderUniforms, DEFAULT_WGSL_AURORA_WAVES, DEFAULT_WGSL_CYBER_TUNNEL};
 pub use static_image::StaticImageRenderer;

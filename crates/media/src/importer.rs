@@ -87,6 +87,36 @@ struct FFprobeFormat {
 
 /// Run ffprobe on file to determine media type and parameters.
 pub fn probe_media(file_path: &Path) -> Result<MediaProbe> {
+    let ext = file_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if ext == "html" || ext == "htm" {
+        return Ok(MediaProbe {
+            kind: WallpaperKind::Html,
+            codec: "html5".to_string(),
+            width: 1920,
+            height: 1080,
+            fps: 60.0,
+            duration_ms: 0,
+            is_animated: false,
+        });
+    }
+
+    if ext == "wgsl" {
+        return Ok(MediaProbe {
+            kind: WallpaperKind::Shader,
+            codec: "wgsl".to_string(),
+            width: 1920,
+            height: 1080,
+            fps: 60.0,
+            duration_ms: 0,
+            is_animated: false,
+        });
+    }
+
     let ffprobe = find_tool("ffprobe").context("ffprobe tool not found in project or PATH")?;
 
     let output = Command::new(ffprobe)
@@ -172,6 +202,34 @@ pub fn probe_media(file_path: &Path) -> Result<MediaProbe> {
 /// Generate a WebP thumbnail around 320px width.
 pub fn generate_thumbnail(input: &Path, output: &Path) -> Result<()> {
     let ffmpeg = find_tool("ffmpeg").context("ffmpeg tool not found in project or PATH")?;
+
+    let ext = input
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if ext == "html" || ext == "htm" || ext == "wgsl" {
+        let col = if ext == "wgsl" { "0x8B5CF6" } else { "0x06B6D4" };
+        let status = Command::new(&ffmpeg)
+            .arg("-y")
+            .arg("-f")
+            .arg("lavfi")
+            .arg("-i")
+            .arg(format!("color=c={}:s=320x180:d=1", col))
+            .arg("-vframes")
+            .arg("1")
+            .arg(output)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+
+        if let Ok(s) = status {
+            if s.success() {
+                return Ok(());
+            }
+        }
+    }
 
     let status = Command::new(&ffmpeg)
         .arg("-y")

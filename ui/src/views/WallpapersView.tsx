@@ -7,6 +7,8 @@ import {
   CheckCircle2,
   Trash2,
   Monitor,
+  Globe,
+  Cpu,
 } from 'lucide-react';
 import { WallpaperItem, WallpaperKind } from '../types';
 import { Language, translations } from '../i18n';
@@ -47,6 +49,10 @@ export const WallpapersView: React.FC<WallpapersViewProps> = ({
         return { label: t.filter_video, icon: <Film size={12} />, color: '#06b6d4' };
       case 'animated':
         return { label: t.filter_animated, icon: <Sparkles size={12} />, color: '#ec4899' };
+      case 'html':
+        return { label: t.filter_html, icon: <Globe size={12} />, color: '#f59e0b' };
+      case 'shader':
+        return { label: t.filter_shader, icon: <Cpu size={12} />, color: '#8b5cf6' };
       default:
         return { label: t.filter_image, icon: <ImageIcon size={12} />, color: '#10b981' };
     }
@@ -75,8 +81,8 @@ export const WallpapersView: React.FC<WallpapersViewProps> = ({
           <p>{t.wallpapers_subtitle}</p>
         </div>
 
-        <div style={{ display: 'flex', gap: '8px' }}>
-          {['all', 'video', 'animated', 'image'].map((type) => (
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          {['all', 'video', 'animated', 'image', 'html', 'shader'].map((type) => (
             <button
               key={type}
               className={`btn btn-sm ${filterType === type ? 'btn-primary' : 'btn-secondary'}`}
@@ -88,7 +94,11 @@ export const WallpapersView: React.FC<WallpapersViewProps> = ({
                 ? t.filter_video
                 : type === 'animated'
                 ? t.filter_animated
-                : t.filter_image}
+                : type === 'image'
+                ? t.filter_image
+                : type === 'html'
+                ? t.filter_html
+                : t.filter_shader}
             </button>
           ))}
         </div>

@@ -117,3 +117,71 @@ fn test_dual_layer_host_instant_and_animated_transition() {
         let _ = animating;
     }
 }
+
+#[test]
+fn test_html_renderer_lifecycle() {
+    use render::{HtmlRenderer, Renderer};
+    use windows::Win32::Foundation::HWND;
+
+    let mut html = HtmlRenderer::new(HWND::default(), 1920, 1080);
+    assert!(html.pause().is_ok());
+    assert!(html.resume().is_ok());
+    assert!(html.resize(1280, 720).is_ok());
+    assert!(html.unload().is_ok());
+}
+
+#[test]
+fn test_shader_renderer_uniforms_and_builtins() {
+    use render::{ShaderRenderer, ShaderUniforms, DEFAULT_WGSL_AURORA_WAVES, DEFAULT_WGSL_CYBER_TUNNEL};
+    use windows::Win32::Foundation::HWND;
+
+    // Verify ShaderUniforms memory layout (alignment to 16 bytes for WGSL std140/std430)
+    assert_eq!(std::mem::size_of::<ShaderUniforms>(), 32);
+
+    let shader = ShaderRenderer::new(HWND::default(), 1920, 1080);
+    shader.update_audio(0.85, 0.42, 0.15);
+
+    // Verify embedded shader sources are non-empty and have vertex/fragment entrypoints
+    assert!(DEFAULT_WGSL_CYBER_TUNNEL.contains("@vertex"));
+    assert!(DEFAULT_WGSL_CYBER_TUNNEL.contains("@fragment"));
+    assert!(DEFAULT_WGSL_AURORA_WAVES.contains("@vertex"));
+    assert!(DEFAULT_WGSL_AURORA_WAVES.contains("@fragment"));
+}
+
+#[test]
+fn test_wgsl_shaders_valid_wgpu_compilation() {
+    use render::{DEFAULT_WGSL_AURORA_WAVES, DEFAULT_WGSL_CYBER_TUNNEL};
+
+    // Initialize headless wgpu instance to validate WGSL modules
+    let instance = wgpu::Instance::default();
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::LowPower,
+        compatible_surface: None,
+        force_fallback_adapter: false,
+    }));
+
+    if let Some(adapter) = adapter {
+        let device_res = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("Test Device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+            },
+            None,
+        ));
+
+        if let Ok((device, _queue)) = device_res {
+            let _tunnel = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Cyber Tunnel WGSL"),
+                source: wgpu::ShaderSource::Wgsl(DEFAULT_WGSL_CYBER_TUNNEL.into()),
+            });
+
+            let _aurora = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Aurora Waves WGSL"),
+                source: wgpu::ShaderSource::Wgsl(DEFAULT_WGSL_AURORA_WAVES.into()),
+            });
+        }
+    }
+}
+
