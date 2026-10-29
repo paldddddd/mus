@@ -11,7 +11,9 @@ test_wallpaper.bmp
 .vscode/
 .idea/
 node_modules/
-/dist/
+/dist/*
+!/dist/update.json
+!/dist/SHA256SUMS.txt
 /ui/src-tauri/target/
 *.zip
 *.pdf

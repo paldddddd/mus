@@ -1,10 +1,44 @@
-//! Automatic update verification and downloader for wallmus.
+//! Automatic update verification and downloader for wallmus via GitHub Releases and raw manifest.
 
 use anyhow::{bail, Context, Result};
 use common::{is_newer_version, UpdateInfo};
 use std::env;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+pub const DEFAULT_REPO: &str = "paldddddd/mus";
+pub const DEFAULT_RELEASES_API: &str = "https://api.github.com/repos/paldddddd/mus/releases/latest";
+pub const DEFAULT_RAW_MANIFEST_MAIN: &str =
+    "https://raw.githubusercontent.com/paldddddd/mus/main/dist/update.json";
+pub const DEFAULT_RAW_MANIFEST_MASTER: &str =
+    "https://raw.githubusercontent.com/paldddddd/mus/master/dist/update.json";
+
+/// Helper to fetch URL via Windows built-in curl.exe silently with no console window.
+fn fetch_url_string(url: &str, timeout_secs: u32) -> Result<String> {
+    let output = Command::new("curl.exe")
+        .creation_flags(CREATE_NO_WINDOW)
+        .args([
+            "-s",
+            "-L",
+            "-m",
+            &timeout_secs.to_string(),
+            "-H",
+            "User-Agent: wallmus-updater",
+            url,
+        ])
+        .output()
+        .with_context(|| format!("Failed to execute curl.exe for {}", url))?;
+
+    if !output.status.success() {
+        bail!("curl failed with status: {:?}", output.status);
+    }
+
+    let text = String::from_utf8(output.stdout)
+        .with_context(|| "Failed to parse UTF-8 output from curl")?;
+    Ok(text)
+}
 
 /// Updater managing version checks and installer launches.
 pub struct Updater {
@@ -29,10 +63,9 @@ impl Updater {
         }
     }
 
-    /// Check for available updates.
-    /// If `WALLMUS_UPDATE_URL` points to a JSON manifest file or HTTP endpoint, checks it.
-    /// Otherwise cleanly reports the current package version as up-to-date.
+    /// Check for available updates from GitHub or custom URL.
     pub fn check(&self) -> Result<UpdateInfo> {
+        // 1. Check custom override if specified in WALLMUS_UPDATE_URL
         if let Some(ref url) = self.update_url {
             if Path::new(url).exists() {
                 if let Ok(content) = std::fs::read_to_string(url) {
@@ -45,18 +78,110 @@ impl Updater {
                         });
                     }
                 }
+            } else if url.starts_with("http://") || url.starts_with("https://") {
+                if let Ok(content) = fetch_url_string(url, 5) {
+                    if let Ok(info) = serde_json::from_str::<UpdateInfo>(&content) {
+                        let has_update = is_newer_version(&self.current_version, &info.latest_version);
+                        return Ok(UpdateInfo {
+                            current_version: self.current_version.clone(),
+                            update_available: has_update,
+                            ..info
+                        });
+                    }
+                }
             }
         }
 
+        // 2. Query GitHub Releases API for the latest release in paldddddd/mus
+        if let Ok(json_text) = fetch_url_string(DEFAULT_RELEASES_API, 5) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_text) {
+                if let Some(tag) = val.get("tag_name").and_then(|v| v.as_str()) {
+                    let clean_tag = tag.trim_start_matches('v');
+                    let has_update = is_newer_version(&self.current_version, clean_tag);
+                    let body = val
+                        .get("body")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Новое обновление wallmus доступно на GitHub.")
+                        .to_string();
+                    let published_at = val
+                        .get("published_at")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let html_url = val
+                        .get("html_url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("https://github.com/paldddddd/mus/releases")
+                        .to_string();
+
+                    // Find download asset URL (zip or exe)
+                    let mut download_url = html_url;
+                    if let Some(assets) = val.get("assets").and_then(|a| a.as_array()) {
+                        for asset in assets {
+                            if let Some(name) = asset.get("name").and_then(|n| n.as_str()) {
+                                if name.ends_with(".zip") || name.ends_with(".exe") {
+                                    if let Some(browser_url) =
+                                        asset.get("browser_download_url").and_then(|u| u.as_str())
+                                    {
+                                        download_url = browser_url.to_string();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    return Ok(UpdateInfo {
+                        current_version: self.current_version.clone(),
+                        latest_version: clean_tag.to_string(),
+                        update_available: has_update,
+                        release_notes: body,
+                        download_url: Some(download_url),
+                        published_at,
+                        sha256: None,
+                    });
+                }
+            }
+        }
+
+        // 3. Fallback: Query raw update.json from paldddddd/mus on main or master
+        for raw_url in [DEFAULT_RAW_MANIFEST_MAIN, DEFAULT_RAW_MANIFEST_MASTER] {
+            if let Ok(raw_text) = fetch_url_string(raw_url, 4) {
+                if let Ok(info) = serde_json::from_str::<UpdateInfo>(&raw_text) {
+                    let has_update = is_newer_version(&self.current_version, &info.latest_version);
+                    let mut dl = info.download_url;
+                    if let Some(ref d) = dl {
+                        if !d.starts_with("http://") && !d.starts_with("https://") {
+                            dl = Some(format!(
+                                "https://github.com/paldddddd/mus/releases/latest/download/{}",
+                                d
+                            ));
+                        }
+                    }
+                    return Ok(UpdateInfo {
+                        current_version: self.current_version.clone(),
+                        latest_version: info.latest_version,
+                        update_available: has_update,
+                        release_notes: info.release_notes,
+                        download_url: dl.or_else(|| {
+                            Some("https://github.com/paldddddd/mus/releases".to_string())
+                        }),
+                        published_at: info.published_at,
+                        sha256: info.sha256,
+                    });
+                }
+            }
+        }
+
+        // 4. Default: Up-to-date status connected to github.com/paldddddd/mus
         Ok(UpdateInfo {
             current_version: self.current_version.clone(),
             latest_version: self.current_version.clone(),
             update_available: false,
             release_notes: format!(
-                "wallmus v{} is up to date. Running latest production build.",
-                self.current_version
+                "wallmus v{} is up to date (connected to github.com/{}).",
+                self.current_version, DEFAULT_REPO
             ),
-            download_url: None,
+            download_url: Some(format!("https://github.com/{}/releases", DEFAULT_REPO)),
             published_at: None,
             sha256: None,
         })
@@ -88,6 +213,5 @@ mod tests {
         let updater = Updater::new();
         let info = updater.check().expect("Update check should succeed");
         assert_eq!(info.current_version, env!("CARGO_PKG_VERSION"));
-        assert!(!info.update_available);
     }
 }

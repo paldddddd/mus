@@ -335,6 +335,14 @@ impl IpcHandler for DaemonContext {
                 let _ = std::process::Command::new("explorer").arg(&dir).spawn();
                 Ok(serde_json::json!({ "status": "opened", "path": dir }))
             }
+            "app.openUrl" => {
+                if let Some(url) = params.get("url").and_then(|v| v.as_str()) {
+                    let _ = std::process::Command::new("explorer").arg(url).spawn();
+                    Ok(serde_json::json!({ "status": "opened", "url": url }))
+                } else {
+                    anyhow::bail!("Missing url parameter");
+                }
+            }
             "app.pickWallpaperFile" => {
                 let filter = "Обои и изображения (*.mp4;*.webm;*.mkv;*.gif;*.jpg;*.jpeg;*.png;*.bmp;*.webp;*.html;*.glsl;*.frag)\0*.mp4;*.webm;*.mkv;*.gif;*.jpg;*.jpeg;*.png;*.bmp;*.webp;*.html;*.glsl;*.frag\0Изображения (*.jpg;*.jpeg;*.png;*.bmp;*.webp;*.gif)\0*.jpg;*.jpeg;*.png;*.bmp;*.webp;*.gif\0Видео (*.mp4;*.webm;*.mkv)\0*.mp4;*.webm;*.mkv\0Все файлы (*.*)\0*.*\0\0";
                 let path = pick_file_win32("Выберите изображение или видео для обоев", filter);

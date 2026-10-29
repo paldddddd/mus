@@ -433,17 +433,43 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </span>
                 <span className="badge">v{updateInfo.latest_version || '0.1.0'}</span>
               </div>
-              {updateInfo.update_available && updateInfo.download_url && (
-                <a
-                  href={updateInfo.download_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="btn btn-sm btn-primary"
-                  style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '6px' }}
-                >
-                  <Download size={14} />
-                  <span>{t.update_download_btn}</span>
-                </a>
+              {updateInfo.update_available ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {updateInfo.release_notes && (
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-main)', whiteSpace: 'pre-wrap' }}>
+                      {updateInfo.release_notes}
+                    </p>
+                  )}
+                  {updateInfo.download_url && (
+                    <button
+                      className="btn btn-sm btn-primary"
+                      style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '6px' }}
+                      onClick={() => {
+                        if (updateInfo.download_url) {
+                          requestDaemon('app.openUrl', { url: updateInfo.download_url });
+                        }
+                      }}
+                    >
+                      <Download size={14} />
+                      <span>{t.update_download_btn}</span>
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
+                  <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                    {updateInfo.release_notes || (lang === 'ru' ? 'У вас установлена последняя версия.' : 'You have the latest version installed.')}
+                  </p>
+                  <button
+                    className="btn btn-sm btn-ghost"
+                    style={{ fontSize: '0.76rem', padding: '4px 10px', flexShrink: 0 }}
+                    onClick={() => {
+                      requestDaemon('app.openUrl', { url: 'https://github.com/paldddddd/mus' });
+                    }}
+                  >
+                    GitHub
+                  </button>
+                </div>
               )}
             </div>
           )}
