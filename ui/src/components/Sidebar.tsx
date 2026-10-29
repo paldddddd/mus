@@ -3,7 +3,7 @@ import {
   Link2,
   Image,
   Music,
-  Monitor,
+  Sliders,
   Gauge,
   Settings,
   Languages,
@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { Language, translations } from '../i18n';
 
-export type NavTab = 'bindings' | 'wallpapers' | 'music' | 'monitors' | 'performance' | 'settings';
+export type NavTab = 'bindings' | 'wallpapers' | 'music' | 'customization' | 'performance' | 'settings';
 
 interface SidebarProps {
   currentTab: NavTab;
@@ -40,7 +40,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'bindings', label: t.nav_bindings, icon: <Link2 size={18} /> },
     { id: 'wallpapers', label: t.nav_wallpapers, icon: <Image size={18} /> },
     { id: 'music', label: t.nav_music, icon: <Music size={18} /> },
-    { id: 'monitors', label: t.nav_monitors, icon: <Monitor size={18} /> },
+    { id: 'customization', label: t.nav_customization, icon: <Sliders size={18} /> },
     { id: 'performance', label: t.nav_performance, icon: <Gauge size={18} /> },
     { id: 'settings', label: t.nav_settings, icon: <Settings size={18} /> },
   ];

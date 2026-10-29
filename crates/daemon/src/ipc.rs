@@ -108,24 +108,35 @@ fn run_server_loop<H: IpcHandler>(handler: Arc<H>, running: Arc<AtomicBool>) {
                 PIPE_ACCESS_DUPLEX,
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
                 PIPE_UNLIMITED_INSTANCES,
-                4096,
-                4096,
+                65536,
+                65536,
                 0,
                 None,
             );
 
             if pipe_handle == INVALID_HANDLE_VALUE {
-                thread::sleep(std::time::Duration::from_millis(500));
+                thread::sleep(std::time::Duration::from_millis(50));
                 continue;
             }
 
-            let connected = ConnectNamedPipe(pipe_handle, None).is_ok();
-            if connected && running.load(Ordering::SeqCst) {
-                handle_client_connection(pipe_handle, &*handler);
-            }
+            let connected = ConnectNamedPipe(pipe_handle, None).is_ok()
+                || windows::Win32::Foundation::GetLastError()
+                    == windows::Win32::Foundation::ERROR_PIPE_CONNECTED;
 
-            let _ = DisconnectNamedPipe(pipe_handle);
-            let _ = CloseHandle(pipe_handle);
+            if connected && running.load(Ordering::SeqCst) {
+                let handler_clone = handler.clone();
+                let raw_pipe = pipe_handle.0 as usize;
+                thread::spawn(move || {
+                    desktop_host::ensure_default_desktop();
+                    let h = HANDLE(raw_pipe as *mut std::ffi::c_void);
+                    handle_client_connection(h, &*handler_clone);
+                    let _ = DisconnectNamedPipe(h);
+                    let _ = CloseHandle(h);
+                });
+            } else {
+                let _ = DisconnectNamedPipe(pipe_handle);
+                let _ = CloseHandle(pipe_handle);
+            }
         }
     }
 }

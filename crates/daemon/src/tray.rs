@@ -5,6 +5,7 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 pub struct SystemTray {
     pub tray: TrayIcon,
     pub open_ui_id: muda::MenuId,
+    pub toggle_widget_id: muda::MenuId,
     pub pause_id: muda::MenuId,
     pub next_id: muda::MenuId,
     pub diag_id: muda::MenuId,
@@ -24,13 +25,15 @@ impl SystemTray {
         let status_item = MenuItem::new(status_text, false, None);
 
         let open_ui_item = MenuItem::new("Открыть настройки", true, None);
-        let pause_item = MenuItem::new("Пауза / Возобновить", true, None);
+        let toggle_widget_item = MenuItem::new("Показать / Скрыть виджет", true, None);
+        let pause_item = MenuItem::new("Пауза / Возобновить обои", true, None);
         let next_item = MenuItem::new("Следующие обои", true, None);
         let diag_item = MenuItem::new("Диагностика (выгрузить отчёт)", true, None);
         let sep = PredefinedMenuItem::separator();
         let quit_item = MenuItem::new("Выход", true, None);
 
         let open_ui_id = open_ui_item.id().clone();
+        let toggle_widget_id = toggle_widget_item.id().clone();
         let pause_id = pause_item.id().clone();
         let next_id = next_item.id().clone();
         let diag_id = diag_item.id().clone();
@@ -39,6 +42,7 @@ impl SystemTray {
         menu.append(&status_item)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&open_ui_item)?;
+        menu.append(&toggle_widget_item)?;
         menu.append(&pause_item)?;
         menu.append(&next_item)?;
         menu.append(&diag_item)?;
@@ -49,7 +53,7 @@ impl SystemTray {
 
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_tooltip("wallmus Live Wallpaper Engine")
+            .with_tooltip("wallmus — Живые обои и музыка")
             .with_icon(icon)
             .build()
             .context("Failed to build TrayIcon")?;
@@ -57,6 +61,7 @@ impl SystemTray {
         Ok(Self {
             tray,
             open_ui_id,
+            toggle_widget_id,
             pause_id,
             next_id,
             diag_id,

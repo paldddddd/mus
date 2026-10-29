@@ -13,3 +13,4 @@ test_wallpaper.bmp
 node_modules/
 /dist/
 /ui/src-tauri/target/
+*.zip

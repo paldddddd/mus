@@ -29,6 +29,44 @@ impl Default for GovernorConfig {
     }
 }
 
+/// Custom user-defined widget preset stored in configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomWidgetPreset {
+    pub id: String,
+    pub name: String,
+    pub theme: String,
+    pub visualizer_style: String, // "bars", "wave", "mirror", "dots"
+    pub dynamic_accent: bool,
+    pub custom_accent: String, // hex like "#00F5D4"
+    pub corner_radius: u32,
+    pub bg_opacity: f32,
+    pub show_lyrics: bool,
+    #[serde(default = "default_true")]
+    pub show_visualizer: bool,
+    pub width: u32,
+    pub height: u32,
+}
+
+fn default_widget_visualizer_style() -> String {
+    "bars".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_custom_accent() -> String {
+    "#00F5D4".to_string()
+}
+
+fn default_corner_radius() -> u32 {
+    16
+}
+
+fn default_bass_pulse_intensity() -> f32 {
+    0.5
+}
+
 /// Desktop music widget settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WidgetConfig {
@@ -43,14 +81,28 @@ pub struct WidgetConfig {
     pub interactive: bool,
     pub visualizer_bars: u32,
     pub opacity: f32,
+    #[serde(default = "default_widget_visualizer_style")]
+    pub visualizer_style: String, // "bars", "wave", "mirror", "dots"
+    #[serde(default = "default_true")]
+    pub dynamic_accent: bool,
+    #[serde(default = "default_custom_accent")]
+    pub custom_accent: String,
+    #[serde(default = "default_corner_radius")]
+    pub corner_radius: u32,
+    #[serde(default = "default_true")]
+    pub show_lyrics: bool,
+    #[serde(default = "default_true")]
+    pub show_visualizer: bool,
+    #[serde(default = "default_true")]
+    pub magnetic_snap: bool,
+    #[serde(default)]
+    pub custom_presets: Vec<CustomWidgetPreset>,
 }
 
 impl Default for WidgetConfig {
     fn default() -> Self {
         Self {
-            // Native widget is an experiment outside the spec; keep it off until the
-            // Stage 4 RSS measurement decides between Tauri and native widget.
-            enabled: false,
+            enabled: true,
             x: 80,
             y: 80,
             width: 380,
@@ -61,6 +113,14 @@ impl Default for WidgetConfig {
             interactive: true,
             visualizer_bars: 24,
             opacity: 0.95,
+            visualizer_style: default_widget_visualizer_style(),
+            dynamic_accent: true,
+            custom_accent: default_custom_accent(),
+            corner_radius: default_corner_radius(),
+            show_lyrics: true,
+            show_visualizer: true,
+            magnetic_snap: true,
+            custom_presets: Vec::new(),
         }
     }
 }
@@ -170,6 +230,12 @@ pub struct AppConfig {
     pub visualizer: WallpaperVisualizerConfig,
     #[serde(default = "default_mouse_interaction")]
     pub mouse_interaction: bool,
+    #[serde(default = "default_bass_pulse_intensity")]
+    pub bass_pulse_intensity: f32,
+    #[serde(default = "default_wallpaper_change_mode")]
+    pub wallpaper_change_mode: String, // "random", "sequential", "off"
+    #[serde(default = "default_false")]
+    pub respect_bindings_in_auto_change: bool,
 }
 
 fn default_crossfade_duration() -> u64 {
@@ -180,6 +246,14 @@ fn default_mouse_interaction() -> bool {
     true
 }
 
+fn default_wallpaper_change_mode() -> String {
+    "random".to_string()
+}
+
+fn default_false() -> bool {
+    false
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -188,7 +262,7 @@ impl Default for AppConfig {
             theme: "dark".to_string(),
             follow_music: true,
             active_wallpaper_id: None,
-            fps_limit: 30,
+            fps_limit: 0,
             crossfade_duration_ms: default_crossfade_duration(),
             governor: GovernorConfig::default(),
             widget: WidgetConfig::default(),
@@ -196,6 +270,9 @@ impl Default for AppConfig {
             hotkeys: HotkeysConfig::default(),
             visualizer: WallpaperVisualizerConfig::default(),
             mouse_interaction: default_mouse_interaction(),
+            bass_pulse_intensity: default_bass_pulse_intensity(),
+            wallpaper_change_mode: default_wallpaper_change_mode(),
+            respect_bindings_in_auto_change: default_false(),
         }
     }
 }

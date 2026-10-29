@@ -11,11 +11,11 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, PostQuitMessage,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW,
     RegisterClassExW, RegisterWindowMessageW, SetLayeredWindowAttributes, SetWindowLongPtrW,
     SetWindowPos, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, GWL_EXSTYLE, LWA_ALPHA, SWP_NOACTIVATE,
     SWP_NOMOVE, SWP_NOSIZE, WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND,
-    WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+    WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
@@ -72,12 +72,7 @@ impl DesktopHostWindow {
             RegisterWindowMessageW(w!("TaskbarCreated"))
         };
 
-        let is_video = matches!(render_mode, RenderMode::Video);
-        let ex_style = if is_video {
-            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP
-        } else {
-            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED
-        };
+        let ex_style = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
 
         // Create window borderless and no-activate
         let hwnd = unsafe {
@@ -100,13 +95,6 @@ impl DesktopHostWindow {
 
         if hwnd.0 as usize == 0 {
             bail!("CreateWindowExW returned null HWND for monitor: {}", monitor.name);
-        }
-
-        // Initialize opacity for non-video layered windows
-        if !is_video {
-            unsafe {
-                let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
-            }
         }
 
         let mut host = Box::new(Self {
@@ -138,48 +126,122 @@ impl DesktopHostWindow {
 
     /// Set window opacity (0 = transparent, 255 = fully opaque) for crossfade.
     pub fn set_alpha(&self, alpha: u8) -> Result<()> {
-        if self.render_mode == RenderMode::Video {
-            // For hardware DirectX 11 / libmpv swapchain, toggle visibility to prevent breaking D3D11 surface
-            unsafe {
-                if alpha == 0 {
-                    let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(
+        use windows::Win32::Graphics::Gdi::{InvalidateRect, UpdateWindow};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, ShowWindow, HWND_TOP, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+            SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE,
+        };
+        unsafe {
+            if alpha == 0 {
+                let _ = ShowWindow(self.hwnd, SW_HIDE);
+            } else {
+                let ex_style = GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE);
+                if (ex_style as u32 & WS_EX_LAYERED.0) == 0 {
+                    SetWindowLongPtrW(
                         self.hwnd,
-                        windows::Win32::UI::WindowsAndMessaging::SW_HIDE,
+                        GWL_EXSTYLE,
+                        ex_style | (WS_EX_LAYERED.0 as isize),
                     );
-                } else {
-                    let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(
+                    let _ = SetWindowPos(
                         self.hwnd,
-                        windows::Win32::UI::WindowsAndMessaging::SW_SHOWNOACTIVATE,
+                        HWND_TOP,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
                     );
                 }
+                let _ = SetLayeredWindowAttributes(self.hwnd, COLORREF(0), alpha, LWA_ALPHA);
+                let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+                let _ = InvalidateRect(self.hwnd, None, false);
+                let _ = UpdateWindow(self.hwnd);
             }
-            return Ok(());
-        }
-
-        unsafe {
-            let ex_style = GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE);
-            if (ex_style as u32 & WS_EX_LAYERED.0) == 0 {
-                SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, ex_style | WS_EX_LAYERED.0 as isize);
-            }
-            SetLayeredWindowAttributes(self.hwnd, COLORREF(0), alpha, LWA_ALPHA)
-                .context("SetLayeredWindowAttributes failed")?;
         }
         Ok(())
     }
 
-    /// Bring this host window directly above another host window in Z-order.
+    /// Bring this host window directly above another host window in Z-order (while staying behind SHELLDLL_DefView).
     pub fn bring_above(&self, other_hwnd: HWND) -> Result<()> {
+        use windows::Win32::Graphics::Gdi::{InvalidateRect, UpdateWindow};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            FindWindowExW, IsWindow, HWND_BOTTOM, HWND_TOP,
+        };
         unsafe {
-            SetWindowPos(
+            // Determine parent & SHELLDLL_DefView so we stay directly beneath desktop icons
+            let parent = self
+                .attach_handle
+                .as_ref()
+                .map(|h| h.target_parent)
+                .unwrap_or_default();
+
+            let defview = if parent.0 as usize != 0 {
+                FindWindowExW(parent, HWND::default(), w!("SHELLDLL_DefView"), PCWSTR::null())
+                    .unwrap_or_default()
+            } else {
+                HWND::default()
+            };
+
+            let insert_after = if defview.0 as usize != 0 && IsWindow(defview).as_bool() {
+                let _ = SetWindowPos(
+                    defview,
+                    HWND_TOP,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+                defview
+            } else {
+                HWND_TOP
+            };
+
+            // 1. Place self.hwnd right behind SHELLDLL_DefView (or at top of wallpaper container)
+            let _ = SetWindowPos(
                 self.hwnd,
-                other_hwnd,
+                insert_after,
                 0,
                 0,
                 0,
                 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            )
-            .context("SetWindowPos failed")?;
+            );
+
+            // 2. Place other_hwnd behind self.hwnd
+            if other_hwnd.0 as usize != 0 && other_hwnd != self.hwnd && IsWindow(other_hwnd).as_bool() {
+                let _ = SetWindowPos(
+                    other_hwnd,
+                    self.hwnd,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
+
+            // 3. Ensure any child WorkerW inside Progman stays at HWND_BOTTOM behind our wallpapers
+            if parent.0 as usize != 0 {
+                if let Ok(shell_worker) =
+                    FindWindowExW(parent, HWND::default(), w!("WorkerW"), PCWSTR::null())
+                {
+                    if shell_worker.0 as usize != 0 && IsWindow(shell_worker).as_bool() {
+                        let _ = SetWindowPos(
+                            shell_worker,
+                            HWND_BOTTOM,
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                        );
+                    }
+                }
+            }
+
+            let _ = InvalidateRect(self.hwnd, None, false);
+            let _ = UpdateWindow(self.hwnd);
         }
         Ok(())
     }
@@ -279,10 +341,7 @@ unsafe extern "system" fn host_wnd_proc(
             let _ = DestroyWindow(hwnd);
             LRESULT(0)
         }
-        WM_DESTROY => {
-            PostQuitMessage(0);
-            LRESULT(0)
-        }
+        WM_DESTROY => LRESULT(0),
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
@@ -291,6 +350,21 @@ unsafe extern "system" fn host_wnd_proc(
 fn paint_host_window(host: &DesktopHostWindow, hdc: HDC) {
     if let Some(ref cb) = host.paint_callback {
         cb(hdc, host.monitor.width, host.monitor.height);
+        return;
+    }
+
+    if host.render_mode != RenderMode::GdiPattern {
+        unsafe {
+            let rect = RECT {
+                left: 0,
+                top: 0,
+                right: host.monitor.width,
+                bottom: host.monitor.height,
+            };
+            let bg_brush = CreateSolidBrush(COLORREF(0x00121212));
+            FillRect(hdc, &rect, bg_brush);
+            let _ = DeleteObject(HGDIOBJ(bg_brush.0 as _));
+        }
         return;
     }
 

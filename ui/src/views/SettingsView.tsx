@@ -3,22 +3,15 @@ import {
   Rocket,
   Languages,
   Palette,
-  FileText,
   FolderOpen,
   Keyboard,
   RotateCcw,
   Check,
-  AlertCircle,
-  Activity,
-  BarChart2,
-  Waves,
-  Sparkles,
-  MousePointer,
   RefreshCw,
   Download,
 } from 'lucide-react';
 import { Language, translations } from '../i18n';
-import { HotkeysConfig, WallpaperVisualizerConfig, UpdateInfo } from '../types';
+import { HotkeysConfig, UpdateInfo } from '../types';
 import { requestDaemon } from '../api/ipc';
 
 interface SettingsViewProps {
@@ -56,71 +49,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [recordingAction, setRecordingAction] = useState<keyof HotkeysConfig | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const [visualizer, setVisualizer] = useState<WallpaperVisualizerConfig>({
-    enabled: true,
-    style: 'bars',
-    bars_count: 48,
-    height_px: 160,
-    opacity: 0.85,
-    accent_color: 'spotify',
-  });
-
-  const [mouseEnabled, setMouseEnabled] = useState<boolean>(true);
-  const [previewCoord, setPreviewCoord] = useState<{ x: number; y: number }>({ x: 50, y: 50 });
-
   const [isPortable, setIsPortable] = useState<boolean>(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState<boolean>(false);
 
-  const fetchVisualizer = useCallback(async () => {
-    try {
-      const resp = await requestDaemon<WallpaperVisualizerConfig>('visualizer.getConfig');
-      if (resp) {
-        setVisualizer(resp);
-      }
-    } catch (err) {
-      console.warn('Failed to fetch visualizer config:', err);
-    }
-  }, []);
-
-  const handleUpdateVisualizer = async (partial: Partial<WallpaperVisualizerConfig>) => {
-    const updated = { ...visualizer, ...partial };
-    setVisualizer(updated);
-    try {
-      await requestDaemon('visualizer.setConfig', { visualizer: updated });
-      setToastMessage(t.visualizer_saved_toast);
-      setTimeout(() => setToastMessage(null), 2500);
-    } catch (err) {
-      console.error('Failed to save visualizer config:', err);
-    }
-  };
-
-  const fetchMouseConfig = useCallback(async () => {
-    try {
-      const resp = await requestDaemon<{ enabled: boolean }>('mouse.getConfig');
-      if (resp && typeof resp.enabled === 'boolean') {
-        setMouseEnabled(resp.enabled);
-      }
-    } catch (err) {
-      console.warn('Failed to fetch mouse config:', err);
-    }
-  }, []);
-
-  const handleToggleMouse = async (enabled: boolean) => {
-    setMouseEnabled(enabled);
-    try {
-      await requestDaemon('mouse.setConfig', { enabled });
-      setToastMessage(t.mouse_saved_toast);
-      setTimeout(() => setToastMessage(null), 2500);
-    } catch (err) {
-      console.error('Failed to update mouse config:', err);
-    }
-  };
-
   const fetchPortableStatus = useCallback(async () => {
     try {
       const resp = await requestDaemon<{ portable: boolean }>('app.isPortable');
-      if (resp) {
+      if (resp && typeof resp.portable === 'boolean') {
         setIsPortable(resp.portable);
       }
     } catch (err) {
@@ -158,10 +94,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   useEffect(() => {
     fetchHotkeys();
-    fetchVisualizer();
-    fetchMouseConfig();
     fetchPortableStatus();
-  }, [fetchHotkeys, fetchVisualizer, fetchMouseConfig, fetchPortableStatus]);
+  }, [fetchHotkeys, fetchPortableStatus]);
 
   // Handle global key recording
   useEffect(() => {
@@ -290,7 +224,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <div>
               <div style={{ fontWeight: 600, fontSize: '0.92rem' }}>{t.setting_autostart}</div>
               <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                Запускать фоновый демон wallmus автоматически при входе пользователя.
+                {lang === 'ru'
+                  ? 'Запускать фоновый демон wallmus автоматически при входе пользователя.'
+                  : 'Start background wallmus daemon automatically on Windows login.'}
               </p>
             </div>
           </div>
@@ -302,83 +238,136 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           />
         </div>
 
-        {/* Global Hotkeys Configuration */}
-        <div className="glass-card" style={{ padding: '20px 24px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-              <Keyboard size={22} color="#f59e0b" />
+        {/* Language & App Theme */}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+            gap: '16px',
+          }}
+        >
+          {/* Language Selector */}
+          <div className="glass-card" style={{ padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <Languages size={18} color="#06b6d4" />
               <div>
-                <div style={{ fontWeight: 600, fontSize: '0.96rem' }}>{t.hotkeys_title}</div>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  {t.hotkeys_subtitle}
+                <div style={{ fontWeight: 600, fontSize: '0.92rem' }}>{t.setting_language}</div>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Русский / English</p>
+              </div>
+            </div>
+            <div className="btn-group" style={{ display: 'flex', width: '100%' }}>
+              <button
+                className={`btn btn-sm ${lang === 'ru' ? 'btn-primary' : 'btn-ghost'}`}
+                style={{ flex: 1, padding: '7px 12px' }}
+                onClick={() => onSelectLanguage('ru')}
+              >
+                Русский
+              </button>
+              <button
+                className={`btn btn-sm ${lang === 'en' ? 'btn-primary' : 'btn-ghost'}`}
+                style={{ flex: 1, padding: '7px 12px' }}
+                onClick={() => onSelectLanguage('en')}
+              >
+                English
+              </button>
+            </div>
+          </div>
+
+          {/* Theme Selector */}
+          <div className="glass-card" style={{ padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <Palette size={18} color="#a855f7" />
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '0.92rem' }}>{t.setting_theme}</div>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                  {lang === 'ru' ? 'Светлая или темная тема оформления' : 'Dark or light UI appearance'}
                 </p>
               </div>
             </div>
-            <button className="btn btn-secondary btn-sm" onClick={handleResetHotkeys} title={t.hk_reset_btn}>
+            <div className="btn-group" style={{ display: 'flex', width: '100%' }}>
+              <button
+                className={`btn btn-sm ${theme === 'dark' ? 'btn-primary' : 'btn-ghost'}`}
+                style={{ flex: 1, padding: '7px 12px' }}
+                onClick={() => onSelectTheme('dark')}
+              >
+                {t.theme_dark}
+              </button>
+              <button
+                className={`btn btn-sm ${theme === 'light' ? 'btn-primary' : 'btn-ghost'}`}
+                style={{ flex: 1, padding: '7px 12px' }}
+                onClick={() => onSelectTheme('light')}
+              >
+                {t.theme_light}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Global Hotkeys */}
+        <div className="glass-card" style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+              <Keyboard size={20} color="#00F5D4" />
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '0.94rem' }}>{t.hk_title}</div>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t.hk_subtitle}</p>
+              </div>
+            </div>
+            <button className="btn btn-sm btn-ghost" onClick={handleResetHotkeys}>
               <RotateCcw size={14} />
               <span>{t.hk_reset_btn}</span>
             </button>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '12px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '12px' }}>
             {hotkeyItems.map((item) => {
+              const isRegistered = hotkeyStatus[item.key] ?? true;
               const isRecording = recordingAction === item.key;
-              const isConflict = hotkeyStatus[item.key] === false;
 
               return (
                 <div
                   key={item.key}
                   style={{
-                    background: isRecording ? 'rgba(99, 102, 241, 0.15)' : 'var(--bg-glass-card)',
-                    border: isRecording
-                      ? '1px solid #6366f1'
-                      : isConflict
-                      ? '1px solid rgba(239, 68, 68, 0.4)'
-                      : '1px solid var(--border-subtle)',
-                    borderRadius: '10px',
-                    padding: '12px 16px',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
-                    transition: 'all 0.2s ease',
+                    padding: '12px 16px',
+                    background: 'rgba(0, 0, 0, 0.25)',
+                    borderRadius: 'var(--radius-md)',
+                    border: '1px solid var(--border-subtle)',
                   }}
                 >
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                     <span style={{ fontSize: '0.86rem', fontWeight: 500 }}>{item.title}</span>
-                    <span style={{ fontSize: '0.72rem', color: isConflict ? '#ef4444' : 'var(--text-muted)' }}>
-                      {isConflict ? (
-                        <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          <AlertCircle size={12} /> {t.hk_status_conflict}
-                        </span>
-                      ) : (
-                        <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          <Check size={12} color="#10b981" /> {t.hk_status_registered}
-                        </span>
-                      )}
-                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span
+                        style={{
+                          width: '6px',
+                          height: '6px',
+                          borderRadius: '50%',
+                          background: isRegistered ? '#10b981' : '#ef4444',
+                        }}
+                      />
+                      <span style={{ fontSize: '0.72rem', color: isRegistered ? '#10b981' : '#ef4444' }}>
+                        {isRegistered ? t.hk_status_registered : t.hk_status_conflict}
+                      </span>
+                    </div>
                   </div>
 
                   <button
-                    onClick={() => setRecordingAction(isRecording ? null : item.key)}
+                    className={`btn btn-sm ${isRecording ? 'btn-primary' : 'btn-ghost'}`}
                     style={{
-                      background: isRecording ? '#6366f1' : 'rgba(255, 255, 255, 0.08)',
-                      color: isRecording ? '#ffffff' : 'var(--text-main)',
-                      border: '1px solid rgba(255, 255, 255, 0.12)',
-                      borderRadius: '6px',
-                      padding: '6px 12px',
-                      fontSize: '0.8rem',
                       fontFamily: 'monospace',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
+                      fontSize: '0.84rem',
+                      padding: '4px 12px',
+                      border: isRecording ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
+                      background: isRecording ? 'rgba(0, 245, 212, 0.2)' : 'rgba(255, 255, 255, 0.05)',
+                      color: isRecording ? 'var(--accent-primary)' : 'var(--text-primary)',
+                      animation: isRecording ? 'pulse 1s infinite' : 'none',
                     }}
-                    title={isRecording ? 'Нажмите комбинацию клавиш' : t.hk_press_to_change}
+                    onClick={() => setRecordingAction(isRecording ? null : item.key)}
                   >
-                    <Keyboard size={13} opacity={0.7} />
-                    <span>{isRecording ? t.hk_recording_hint : item.value}</span>
+                    {isRecording ? t.hk_press_keys_prompt : item.value}
                   </button>
                 </div>
               );
@@ -386,443 +375,99 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </div>
 
-        {/* Audio Visualizer Layer Section */}
-        <div className="glass-card" style={{ padding: '24px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-              <Activity size={22} color="#06b6d4" />
-              <div>
-                <div style={{ fontWeight: 600, fontSize: '0.98rem' }}>{t.visualizer_title}</div>
-                <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                  {t.visualizer_subtitle}
-                </p>
-              </div>
-            </div>
-            <button
-              className={`btn btn-sm ${visualizer.enabled ? 'btn-primary' : 'btn-secondary'}`}
-              onClick={() => handleUpdateVisualizer({ enabled: !visualizer.enabled })}
-            >
-              {visualizer.enabled ? (lang === 'ru' ? 'Включен' : 'Enabled') : (lang === 'ru' ? 'Выключен' : 'Disabled')}
-            </button>
-          </div>
-
-          {visualizer.enabled && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '16px', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '18px' }}>
-              {/* Style selector */}
-              <div>
-                <label style={{ fontSize: '0.85rem', fontWeight: 600, display: 'block', marginBottom: '8px', color: 'var(--text-secondary)' }}>
-                  {t.visualizer_style}
-                </label>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
-                  {[
-                    { key: 'bars', label: t.visualizer_style_bars, icon: <BarChart2 size={16} /> },
-                    { key: 'wave', label: t.visualizer_style_wave, icon: <Waves size={16} /> },
-                    { key: 'glow', label: t.visualizer_style_glow, icon: <Sparkles size={16} /> },
-                  ].map((s) => (
-                    <button
-                      key={s.key}
-                      className={`btn btn-sm ${visualizer.style === s.key ? 'btn-primary' : 'btn-secondary'}`}
-                      style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '10px 14px' }}
-                      onClick={() => handleUpdateVisualizer({ style: s.key as 'bars' | 'wave' | 'glow' })}
-                    >
-                      {s.icon}
-                      <span>{s.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Color Palette */}
-              <div>
-                <label style={{ fontSize: '0.85rem', fontWeight: 600, display: 'block', marginBottom: '8px', color: 'var(--text-secondary)' }}>
-                  {t.visualizer_palette}
-                </label>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
-                  {[
-                    { key: 'spotify', label: t.visualizer_palette_spotify, gradient: 'linear-gradient(135deg, #1DB954, #1ED760)' },
-                    { key: 'cyan_purple', label: t.visualizer_palette_cyan_purple, gradient: 'linear-gradient(135deg, #06B6D4, #8B5CF6)' },
-                    { key: 'neon_blue', label: t.visualizer_palette_neon_blue, gradient: 'linear-gradient(135deg, #2563EB, #38BDF8)' },
-                    { key: 'fire', label: t.visualizer_palette_fire, gradient: 'linear-gradient(135deg, #F59E0B, #EF4444)' },
-                  ].map((p) => {
-                    const isSelected = visualizer.accent_color === p.key;
-                    return (
-                      <button
-                        key={p.key}
-                        onClick={() => handleUpdateVisualizer({ accent_color: p.key as 'spotify' | 'cyan_purple' | 'neon_blue' | 'fire' })}
-                        style={{
-                          background: isSelected ? 'rgba(255, 255, 255, 0.12)' : 'rgba(255, 255, 255, 0.04)',
-                          border: isSelected ? '2px solid var(--accent-color, #06b6d4)' : '1px solid rgba(255, 255, 255, 0.1)',
-                          borderRadius: '8px',
-                          padding: '10px',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          alignItems: 'center',
-                          gap: '6px',
-                          cursor: 'pointer',
-                          color: '#fff',
-                        }}
-                      >
-                        <div style={{ width: '28px', height: '12px', borderRadius: '4px', background: p.gradient }} />
-                        <span style={{ fontSize: '0.75rem', fontWeight: 500 }}>{p.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Sliders: Bars Count, Height, Opacity */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t.visualizer_bars_count}</span>
-                    <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>{visualizer.bars_count}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min="16"
-                    max="128"
-                    step="8"
-                    value={visualizer.bars_count}
-                    onChange={(e) => handleUpdateVisualizer({ bars_count: parseInt(e.target.value, 10) })}
-                    style={{ width: '100%', accentColor: 'var(--accent-color, #06b6d4)' }}
-                  />
-                </div>
-
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t.visualizer_height}</span>
-                    <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>{visualizer.height_px} px</span>
-                  </div>
-                  <input
-                    type="range"
-                    min="40"
-                    max="400"
-                    step="10"
-                    value={visualizer.height_px}
-                    onChange={(e) => handleUpdateVisualizer({ height_px: parseInt(e.target.value, 10) })}
-                    style={{ width: '100%', accentColor: 'var(--accent-color, #06b6d4)' }}
-                  />
-                </div>
-
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t.visualizer_opacity}</span>
-                    <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>{Math.round(visualizer.opacity * 100)}%</span>
-                  </div>
-                  <input
-                    type="range"
-                    min="0.1"
-                    max="1.0"
-                    step="0.05"
-                    value={visualizer.opacity}
-                    onChange={(e) => handleUpdateVisualizer({ opacity: parseFloat(e.target.value) })}
-                    style={{ width: '100%', accentColor: 'var(--accent-color, #06b6d4)' }}
-                  />
-                </div>
-              </div>
-
-              {/* Mini Visualizer Live Preview */}
-              <div
-                style={{
-                  background: 'rgba(0, 0, 0, 0.35)',
-                  borderRadius: '10px',
-                  padding: '16px 20px',
-                  border: '1px solid rgba(255, 255, 255, 0.08)',
-                  display: 'flex',
-                  alignItems: 'flex-end',
-                  justifyContent: 'center',
-                  gap: '4px',
-                  height: '70px',
-                  overflow: 'hidden',
-                  position: 'relative',
-                }}
-              >
-                <div style={{ position: 'absolute', top: '8px', left: '12px', fontSize: '0.7rem', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  Live Preview
-                </div>
-                {Array.from({ length: 32 }).map((_, i) => {
-                  const factor = Math.sin((i / 31) * Math.PI) * 0.8 + 0.2;
-                  const h = Math.max(4, factor * 48);
-                  const gradient =
-                    visualizer.accent_color === 'cyan_purple'
-                      ? 'linear-gradient(to top, #06b6d4, #8b5cf6)'
-                      : visualizer.accent_color === 'neon_blue'
-                      ? 'linear-gradient(to top, #2563eb, #38bdf8)'
-                      : visualizer.accent_color === 'fire'
-                      ? 'linear-gradient(to top, #f59e0b, #ef4444)'
-                      : 'linear-gradient(to top, #1db954, #1ed760)';
-                  return (
-                    <div
-                      key={i}
-                      style={{
-                        width: '6px',
-                        height: visualizer.style === 'glow' ? `${factor * 20 + 4}px` : `${h}px`,
-                        borderRadius: visualizer.style === 'glow' ? '2px' : '3px 3px 0 0',
-                        background: gradient,
-                        opacity: visualizer.opacity,
-                        transition: 'height 0.2s ease',
-                      }}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Desktop Mouse Reaction */}
-        <div className="glass-card" style={{ padding: '20px 24px' }}>
+        {/* Updates & Installation Status */}
+        <div className="glass-card" style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-              <MousePointer size={20} color="#38bdf8" />
+              <RefreshCw size={20} color="#6366f1" />
               <div>
-                <div style={{ fontWeight: 600, fontSize: '0.92rem' }}>{t.mouse_title}</div>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  {t.mouse_subtitle}
-                </p>
+                <div style={{ fontWeight: 600, fontSize: '0.94rem' }}>{t.update_title}</div>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t.update_subtitle}</p>
               </div>
             </div>
-            <label className="switch" style={{ cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={mouseEnabled}
-                onChange={(e) => handleToggleMouse(e.target.checked)}
-              />
-              <span className="slider round" />
-            </label>
-          </div>
-
-          {mouseEnabled && (
-            <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                <span>Интерактивный тест отслеживания (наведите курсор):</span>
-                <span style={{ fontFamily: 'monospace', color: '#38bdf8', fontWeight: 600 }}>
-                  X: {previewCoord.x.toFixed(0)}% | Y: {previewCoord.y.toFixed(0)}%
-                </span>
-              </div>
-              <div
-                onMouseMove={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  const x = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
-                  const y = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
-                  setPreviewCoord({ x, y });
-                }}
-                style={{
-                  height: '100px',
-                  borderRadius: '8px',
-                  background: 'rgba(0,0,0,0.45)',
-                  border: '1px solid rgba(56, 189, 248, 0.25)',
-                  position: 'relative',
-                  overflow: 'hidden',
-                  cursor: 'crosshair',
-                  backgroundImage: 'radial-gradient(circle, rgba(56,189,248,0.12) 1px, transparent 1px)',
-                  backgroundSize: '16px 16px',
-                }}
-              >
-                {/* Crosshair lines */}
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    bottom: 0,
-                    left: `${previewCoord.x}%`,
-                    width: '1px',
-                    background: 'rgba(56, 189, 248, 0.35)',
-                    pointerEvents: 'none',
-                    transition: 'left 0.05s ease-out',
-                  }}
-                />
-                <div
-                  style={{
-                    position: 'absolute',
-                    left: 0,
-                    right: 0,
-                    top: `${previewCoord.y}%`,
-                    height: '1px',
-                    background: 'rgba(56, 189, 248, 0.35)',
-                    pointerEvents: 'none',
-                    transition: 'top 0.05s ease-out',
-                  }}
-                />
-                {/* Glowing target cursor and aura */}
-                <div
-                  style={{
-                    position: 'absolute',
-                    left: `${previewCoord.x}%`,
-                    top: `${previewCoord.y}%`,
-                    transform: 'translate(-50%, -50%)',
-                    width: '18px',
-                    height: '18px',
-                    borderRadius: '50%',
-                    border: '2px solid #38bdf8',
-                    background: 'rgba(56, 189, 248, 0.25)',
-                    boxShadow: '0 0 14px rgba(56, 189, 248, 0.7)',
-                    pointerEvents: 'none',
-                    transition: 'left 0.05s ease-out, top 0.05s ease-out',
-                  }}
-                />
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Language Selection */}
-        <div
-          className="glass-card"
-          style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 24px' }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-            <Languages size={20} color="#06b6d4" />
-            <div>
-              <div style={{ fontWeight: 600, fontSize: '0.92rem' }}>{t.setting_language}</div>
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                Язык отображения интерфейса настроек и виджета.
-              </p>
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <button
-              className={`btn btn-sm ${lang === 'ru' ? 'btn-primary' : 'btn-secondary'}`}
-              onClick={() => onSelectLanguage('ru')}
-            >
-              Русский (RU)
-            </button>
-            <button
-              className={`btn btn-sm ${lang === 'en' ? 'btn-primary' : 'btn-secondary'}`}
-              onClick={() => onSelectLanguage('en')}
-            >
-              English (EN)
-            </button>
-          </div>
-        </div>
-
-        {/* Color Theme */}
-        <div
-          className="glass-card"
-          style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 24px' }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-            <Palette size={20} color="#ec4899" />
-            <div>
-              <div style={{ fontWeight: 600, fontSize: '0.92rem' }}>{t.setting_theme}</div>
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                Тёмная тема со стеклянным размытием Mica/Acrylic или светлая.
-              </p>
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <button
-              className={`btn btn-sm ${theme === 'dark' ? 'btn-primary' : 'btn-secondary'}`}
-              onClick={() => onSelectTheme('dark')}
-            >
-              {t.theme_dark}
-            </button>
-            <button
-              className={`btn btn-sm ${theme === 'light' ? 'btn-primary' : 'btn-secondary'}`}
-              onClick={() => onSelectTheme('light')}
-            >
-              {t.theme_light}
-            </button>
-          </div>
-        </div>
-
-        {/* Application Updates & Portability */}
-        <div className="glass-card" style={{ padding: '20px 24px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-              <RefreshCw size={20} color="#a855f7" className={isCheckingUpdate ? 'spin' : ''} />
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <span style={{ fontWeight: 600, fontSize: '0.92rem' }}>{t.update_title}</span>
-                  <span
-                    style={{
-                      fontSize: '0.72rem',
-                      padding: '2px 8px',
-                      borderRadius: '12px',
-                      background: isPortable ? 'rgba(234, 179, 8, 0.2)' : 'rgba(59, 130, 246, 0.2)',
-                      color: isPortable ? '#eab308' : '#60a5fa',
-                      border: `1px solid ${isPortable ? 'rgba(234, 179, 8, 0.4)' : 'rgba(59, 130, 246, 0.4)'}`,
-                    }}
-                  >
-                    {isPortable ? t.update_portable_active : t.update_installed_mode}
-                  </span>
-                </div>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  {isPortable ? t.update_portable_desc : t.update_subtitle}
-                </p>
-              </div>
-            </div>
-            <button
-              className="btn btn-secondary btn-sm"
-              onClick={handleCheckUpdate}
-              disabled={isCheckingUpdate}
-              style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-            >
+            <button className="btn btn-sm btn-ghost" onClick={handleCheckUpdate} disabled={isCheckingUpdate}>
               <RefreshCw size={14} className={isCheckingUpdate ? 'spin' : ''} />
               <span>{isCheckingUpdate ? t.update_checking : t.update_check_btn}</span>
             </button>
           </div>
 
+          <div
+            style={{
+              padding: '12px 16px',
+              borderRadius: 'var(--radius-md)',
+              background: 'rgba(0, 0, 0, 0.25)',
+              border: '1px solid var(--border-subtle)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+            }}
+          >
+            <div>
+              <span style={{ fontSize: '0.86rem', fontWeight: 500 }}>
+                {isPortable ? t.update_portable_active : t.update_installed_mode}
+              </span>
+              <p style={{ fontSize: '0.74rem', color: 'var(--text-dim)', marginTop: '2px' }}>
+                {isPortable
+                  ? t.update_portable_desc
+                  : (lang === 'ru' ? 'Конфигурация и кэш хранятся в %APPDATA%/wallmus' : 'Settings and cache stored in %APPDATA%/wallmus')}
+              </p>
+            </div>
+            <span className="badge">{isPortable ? 'Portable' : 'Installed'}</span>
+          </div>
+
           {updateInfo && (
             <div
               style={{
-                marginTop: '16px',
-                padding: '14px 18px',
-                borderRadius: '8px',
-                background: updateInfo.update_available ? 'rgba(16, 185, 129, 0.1)' : 'rgba(255, 255, 255, 0.04)',
-                border: `1px solid ${updateInfo.update_available ? 'rgba(16, 185, 129, 0.3)' : 'rgba(255, 255, 255, 0.08)'}`,
+                padding: '14px 16px',
+                borderRadius: 'var(--radius-md)',
+                background: updateInfo.update_available ? 'rgba(0, 245, 212, 0.1)' : 'rgba(255, 255, 255, 0.03)',
+                border: updateInfo.update_available ? '1px solid rgba(0, 245, 212, 0.3)' : '1px solid var(--border-subtle)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px',
               }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  {updateInfo.update_available ? (
-                    <Download size={16} color="#10b981" />
-                  ) : (
-                    <Check size={16} color="#10b981" />
-                  )}
-                  <span style={{ fontWeight: 600, fontSize: '0.88rem', color: updateInfo.update_available ? '#10b981' : 'var(--text-main)' }}>
-                    {updateInfo.update_available
-                      ? `${t.update_available}: v${updateInfo.latest_version}`
-                      : `${t.update_latest} (v${updateInfo.current_version})`}
-                  </span>
-                </div>
-                {updateInfo.download_url && (
-                  <a
-                    href={updateInfo.download_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="btn btn-primary btn-sm"
-                    style={{ textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}
-                  >
-                    <Download size={14} />
-                    <span>{t.update_download_btn}</span>
-                  </a>
-                )}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: '0.88rem', fontWeight: 600 }}>
+                  {updateInfo.update_available ? t.update_available : t.update_latest}
+                </span>
+                <span className="badge">v{updateInfo.latest_version || '0.1.0'}</span>
               </div>
-              <div style={{ marginTop: '8px', fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
-                {updateInfo.release_notes}
-              </div>
+              {updateInfo.update_available && updateInfo.download_url && (
+                <a
+                  href={updateInfo.download_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="btn btn-sm btn-primary"
+                  style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Download size={14} />
+                  <span>{t.update_download_btn}</span>
+                </a>
+              )}
             </div>
           )}
         </div>
 
-        {/* Application Logs */}
+        {/* System Logs */}
         <div
           className="glass-card"
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 24px' }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-            <FileText size={20} color="#10b981" />
+            <FolderOpen size={20} color="#10b981" />
             <div>
               <div style={{ fontWeight: 600, fontSize: '0.92rem' }}>{t.setting_logs}</div>
               <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                Логи ведутся в %LOCALAPPDATA%\wallmus\logs\ с суточной ротацией.
+                {lang === 'ru'
+                  ? 'Открыть директорию журналов событий и отладочных дампов'
+                  : 'Open the directory containing application event logs and debug dumps'}
               </p>
             </div>
           </div>
-          <button className="btn btn-secondary btn-sm" onClick={onOpenLogs}>
-            <FolderOpen size={15} />
-            <span>{t.open_logs_btn}</span>
+          <button className="btn btn-sm btn-ghost" onClick={onOpenLogs}>
+            <FolderOpen size={14} />
+            <span>{t.btn_open_logs}</span>
           </button>
         </div>
       </div>

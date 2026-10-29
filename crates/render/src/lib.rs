@@ -27,6 +27,9 @@ pub trait Renderer: Send {
 
     /// Update interactive cursor position (normalized 0.0 .. 1.0) if supported by renderer.
     fn update_mouse(&mut self, _x: f32, _y: f32) {}
+
+    /// Update audio bass energy / kick (0.0 .. 1.0) for rhythmic bounce/zoom effects.
+    fn update_bass(&mut self, _bass: f32) {}
 }
 
 pub use crossfade::{ActiveLayer, DualLayerHost};

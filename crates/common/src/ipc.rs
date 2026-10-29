@@ -44,18 +44,30 @@ pub fn send_request(method: &str, params: serde_json::Value) -> Result<IpcRespon
     let wide_pipe: Vec<u16> = PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
 
     unsafe {
-        let handle = match CreateFileW(
-            PCWSTR(wide_pipe.as_ptr()),
-            FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
-            windows::Win32::Storage::FileSystem::FILE_SHARE_NONE,
-            None,
-            OPEN_EXISTING,
-            FILE_FLAGS_AND_ATTRIBUTES(0),
-            HANDLE::default(),
-        ) {
-            Ok(h) if !h.is_invalid() => h,
-            _ => bail!("Could not connect to wallmus IPC pipe (daemon might not be running)"),
-        };
+        let mut handle = HANDLE::default();
+        let mut connected = false;
+        for _ in 0..40 {
+            if let Ok(h) = CreateFileW(
+                PCWSTR(wide_pipe.as_ptr()),
+                FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+                windows::Win32::Storage::FileSystem::FILE_SHARE_NONE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAGS_AND_ATTRIBUTES(0),
+                HANDLE::default(),
+            ) {
+                if !h.is_invalid() {
+                    handle = h;
+                    connected = true;
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
+        if !connected {
+            bail!("Could not connect to wallmus IPC pipe (daemon might not be running)");
+        }
 
         let file = std::fs::File::from_raw_handle(handle.0 as _);
         let mut writer = &file;

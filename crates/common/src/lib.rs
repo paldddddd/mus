@@ -8,8 +8,8 @@ pub mod paths;
 pub mod update;
 
 pub use config::{
-    AppConfig, GovernorConfig, HotkeysConfig, MusicConfig, MusicSource, WallpaperVisualizerConfig,
-    WidgetConfig,
+    AppConfig, CustomWidgetPreset, GovernorConfig, HotkeysConfig, MusicConfig, MusicSource,
+    WallpaperVisualizerConfig, WidgetConfig,
 };
 pub use ipc::{send_request, IpcError, IpcRequest, IpcResponse, PIPE_NAME};
 pub use models::{BindingItem, BindingScope, PlaylistItem, TrackItem, WallpaperItem, WallpaperKind};

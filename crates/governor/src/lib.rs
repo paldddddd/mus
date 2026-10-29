@@ -12,8 +12,7 @@ use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::Shell::{
-    SHQueryUserNotificationState, QUNS_BUSY, QUNS_PRESENTATION_MODE,
-    QUNS_RUNNING_D3D_FULL_SCREEN,
+    SHQueryUserNotificationState, QUNS_RUNNING_D3D_FULL_SCREEN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowLongW, GetWindowRect,
@@ -213,9 +212,9 @@ fn is_on_battery() -> bool {
 /// Query whether a full-screen application or D3D game is active on the monitor.
 fn is_fullscreen_active(monitor: &MonitorInfo, our_pid: u32) -> bool {
     unsafe {
-        // 1. Check Shell User Notification State
+        // 1. Check Shell User Notification State (only true exclusive D3D fullscreen)
         if let Ok(state) = SHQueryUserNotificationState() {
-            if state == QUNS_RUNNING_D3D_FULL_SCREEN || state == QUNS_BUSY || state == QUNS_PRESENTATION_MODE {
+            if state == QUNS_RUNNING_D3D_FULL_SCREEN {
                 return true;
             }
         }
@@ -232,24 +231,50 @@ fn is_fullscreen_active(monitor: &MonitorInfo, our_pid: u32) -> bool {
             return false;
         }
 
+        let mut class_buf = [0u16; 64];
+        let len = GetClassNameW(fg, &mut class_buf);
+        let class_name = String::from_utf16_lossy(&class_buf[..len as usize]);
+        if class_name == "Progman"
+            || class_name == "WorkerW"
+            || class_name == "SHELLDLL_DefView"
+            || class_name == "SysListView32"
+            || class_name == "Shell_TrayWnd"
+            || class_name == "SecondaryTrayWnd"
+            || class_name == "Windows.UI.Core.CoreWindow"
+            || class_name == "XamlExplorerHostIslandWindow"
+            || class_name.starts_with("wallmus")
+        {
+            return false;
+        }
+
+        let mut title_buf = [0u16; 128];
+        let tlen = windows::Win32::UI::WindowsAndMessaging::GetWindowTextW(fg, &mut title_buf);
+        if tlen > 0 {
+            let title = String::from_utf16_lossy(&title_buf[..tlen as usize]);
+            if title.starts_with("wallmus") {
+                return false;
+            }
+        }
+
+        let style = GetWindowLongW(fg, windows::Win32::UI::WindowsAndMessaging::GWL_STYLE) as u32;
+        let has_caption = (style & windows::Win32::UI::WindowsAndMessaging::WS_CAPTION.0)
+            == windows::Win32::UI::WindowsAndMessaging::WS_CAPTION.0;
+        let has_thickframe = (style & windows::Win32::UI::WindowsAndMessaging::WS_THICKFRAME.0) != 0;
+        let is_maximized = (style & windows::Win32::UI::WindowsAndMessaging::WS_MAXIMIZE.0) != 0;
+        if has_caption || has_thickframe || is_maximized {
+            // Normal desktop or custom-titlebar window (Chrome, VSCode, Discord, Tauri, etc.)
+            // is handled by is_desktop_covered, not FullScreenApp game detection.
+            return false;
+        }
+
         let mut rc = RECT::default();
         if GetWindowRect(fg, &mut rc).is_ok() {
-            let fg_w = rc.right - rc.left;
-            let fg_h = rc.bottom - rc.top;
-
-            // Covers the monitor completely
+            // Only true borderless fullscreen (covers the entire monitor including the taskbar area)
             if rc.left <= monitor.x
                 && rc.top <= monitor.y
                 && rc.right >= monitor.x + monitor.width
                 && rc.bottom >= monitor.y + monitor.height
             {
-                return true;
-            }
-
-            // Exceeds 95% of monitor resolution
-            let mon_area = (monitor.width * monitor.height) as f64;
-            let fg_area = (fg_w * fg_h) as f64;
-            if fg_area >= mon_area * 0.95 && rc.left >= monitor.x - 20 && rc.top >= monitor.y - 20 {
                 return true;
             }
         }
@@ -314,6 +339,15 @@ fn is_desktop_covered(monitor: &MonitorInfo, our_pid: u32) -> bool {
         GetWindowThreadProcessId(hwnd, Some(&mut process_id));
         if process_id == ctx.our_pid {
             return true.into();
+        }
+
+        let mut title_buf = [0u16; 128];
+        let tlen = windows::Win32::UI::WindowsAndMessaging::GetWindowTextW(hwnd, &mut title_buf);
+        if tlen > 0 {
+            let title = String::from_utf16_lossy(&title_buf[..tlen as usize]);
+            if title.starts_with("wallmus") {
+                return true.into();
+            }
         }
 
         let mut rc = RECT::default();

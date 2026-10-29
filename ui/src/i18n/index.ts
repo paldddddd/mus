@@ -6,10 +6,20 @@ export const translations = {
     nav_bindings: 'Привязки',
     nav_wallpapers: 'Обои',
     nav_music: 'Музыка',
+    nav_customization: 'Кастомизация',
     nav_monitors: 'Мониторы',
     nav_performance: 'Производительность',
     nav_settings: 'Настройки',
     nav_widget: 'Виджет',
+
+    // Customization View
+    customization_title: 'Кастомизация и оформление',
+    customization_subtitle: 'Настройка музыкального виджета, визуализатора и эффектов обоев',
+    subtab_widget: 'Виджет',
+    subtab_effects: 'Обои и эффекты',
+    subtab_monitors: 'Мониторы',
+    setting_show_visualizer: 'Эквалайзер на виджете',
+    setting_show_visualizer_desc: 'Показывать анимированные полосы частот в нижней части виджета',
 
     // App Header
     app_subtitle: 'Живые обои с музыкальным виджетом',
@@ -55,6 +65,14 @@ export const translations = {
     property_fit: 'Вписывание',
     property_fps: 'Ограничение FPS',
     property_resolution: 'Разрешение',
+    auto_change_title: 'Автосмена обоев при смене трека',
+    auto_change_subtitle: 'Автоматически устанавливать обои при переключении трека (из любых плееров)',
+    auto_change_random: 'Случайно',
+    auto_change_sequential: 'По порядку',
+    auto_change_off: 'Отключено',
+    auto_change_respect_bindings: 'Сохранять привязанные обои для треков из библиотеки',
+    respect_bindings_label: 'Учитывать ручные привязки треков',
+    respect_bindings_hint: 'Если трек персонально привязан к обоям, включать его привязку',
 
     // Music View
     music_title: 'Музыкальная библиотека',
@@ -107,6 +125,10 @@ export const translations = {
     // Hotkeys Section
     hotkeys_title: 'Глобальные горячие клавиши',
     hotkeys_subtitle: 'Работают отовсюду в Windows, даже когда приложение свёрнуто или запущены игры.',
+    hk_title: 'Глобальные горячие клавиши',
+    hk_subtitle: 'Работают отовсюду в Windows, даже когда приложение свёрнуто или запущены игры.',
+    hk_press_keys_prompt: 'Нажмите клавиши...',
+    btn_open_logs: 'Открыть папку логов',
     hk_toggle_playback: 'Воспроизведение / Пауза музыки',
     hk_next_track: 'Следующий трек',
     hk_prev_track: 'Предыдущий трек',
@@ -125,7 +147,7 @@ export const translations = {
     widget_pinned: 'Закрепить положение',
     widget_always_on_top: 'Поверх всех окон',
     widget_theme_spotify: 'Стиль Spotify',
-    widget_theme_pill: 'Капсула (Pill)',
+    widget_theme_aurora: 'Неон Аврора (Aurora)',
     widget_theme_glass: 'Стекло (Glass)',
     widget_theme_vinyl: 'Винил (Vinyl)',
 
@@ -171,10 +193,20 @@ export const translations = {
     nav_bindings: 'Bindings',
     nav_wallpapers: 'Wallpapers',
     nav_music: 'Music',
+    nav_customization: 'Customization',
     nav_monitors: 'Monitors',
     nav_performance: 'Performance',
     nav_settings: 'Settings',
     nav_widget: 'Widget',
+
+    // Customization View
+    customization_title: 'Customization & Themes',
+    customization_subtitle: 'Configure music widget, desktop visualizer and wallpaper effects',
+    subtab_widget: 'Widget',
+    subtab_effects: 'Wallpaper & Effects',
+    subtab_monitors: 'Monitors',
+    setting_show_visualizer: 'Widget Equalizer',
+    setting_show_visualizer_desc: 'Show animated frequency bars at the bottom of the desktop widget',
 
     // App Header
     app_subtitle: 'Live desktop wallpaper engine with music widget',
@@ -220,6 +252,14 @@ export const translations = {
     property_fit: 'Fit Mode',
     property_fps: 'FPS Limit',
     property_resolution: 'Resolution',
+    auto_change_title: 'Auto-Change Wallpaper on Track Switch',
+    auto_change_subtitle: 'Automatically switch wallpapers whenever music tracks change',
+    auto_change_random: 'Random',
+    auto_change_sequential: 'Sequential',
+    auto_change_off: 'Disabled',
+    auto_change_respect_bindings: 'Respect manual track-to-wallpaper bindings',
+    respect_bindings_label: 'Respect manual track bindings',
+    respect_bindings_hint: 'Use explicit track bindings when available instead of random selection',
 
     // Music View
     music_title: 'Music Library',
@@ -272,6 +312,10 @@ export const translations = {
     // Hotkeys Section
     hotkeys_title: 'Global Hotkeys',
     hotkeys_subtitle: 'Work system-wide across Windows, even when minimized or inside games.',
+    hk_title: 'Global Hotkeys',
+    hk_subtitle: 'Work system-wide across Windows, even when minimized or inside games.',
+    hk_press_keys_prompt: 'Press keys...',
+    btn_open_logs: 'Open Logs Folder',
     hk_toggle_playback: 'Play / Pause Music',
     hk_next_track: 'Next Track',
     hk_prev_track: 'Previous Track',
@@ -290,7 +334,7 @@ export const translations = {
     widget_pinned: 'Pin Position',
     widget_always_on_top: 'Always on top',
     widget_theme_spotify: 'Spotify Style',
-    widget_theme_pill: 'Capsule (Pill)',
+    widget_theme_aurora: 'Neon Aurora (Aurora)',
     widget_theme_glass: 'Glassmorphism',
     widget_theme_vinyl: 'Vinyl Record',
 

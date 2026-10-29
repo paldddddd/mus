@@ -1,7 +1,6 @@
 use crate::surface::ArgbSurface;
 use anyhow::{bail, Context, Result};
 use common::{MonitorInfo, WallpaperVisualizerConfig};
-use desktop_host::{attach, detach, revalidate, AttachHandle};
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
@@ -11,9 +10,9 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassExW, UpdateLayeredWindow, HCURSOR,
-    HICON, ULW_ALPHA, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassExW, SetWindowPos,
+    UpdateLayeredWindow, HCURSOR, HICON, HWND_BOTTOM, SWP_NOACTIVATE, SWP_SHOWWINDOW, ULW_ALPHA,
+    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 static VISUALIZER_CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
@@ -23,7 +22,6 @@ const VISUALIZER_CLASS_NAME: PCWSTR = w!("wallmus_WallpaperVisualizer");
 pub struct WallpaperVisualizerWindow {
     pub hwnd: HWND,
     pub monitor: MonitorInfo,
-    attach_handle: Option<AttachHandle>,
     surface: ArgbSurface,
     hdc_screen: HDC,
     hdc_mem: HDC,
@@ -45,13 +43,37 @@ unsafe impl Sync for WallpaperVisualizerWindow {}
 impl WallpaperVisualizerWindow {
     /// Create wallpaper visualizer overlay window for a given monitor.
     pub fn create(monitor: MonitorInfo, config: &WallpaperVisualizerConfig) -> Result<Box<Self>> {
-        desktop_host::ensure_default_desktop();
         ensure_class_registered()?;
 
         let width = monitor.width as u32;
         let height = config.height_px.clamp(40, 480);
         let x = monitor.x;
-        let y = monitor.y + monitor.height - height as i32;
+
+        // Query monitor work area to account for taskbar height dynamically
+        let taskbar_bottom_inset = unsafe {
+            let mut inset = 0i32;
+            let hmon = windows::Win32::Graphics::Gdi::MonitorFromPoint(
+                POINT {
+                    x: monitor.x + (monitor.width / 2),
+                    y: monitor.y + (monitor.height / 2),
+                },
+                windows::Win32::Graphics::Gdi::MONITOR_DEFAULTTONEAREST,
+            );
+            let mut mi = windows::Win32::Graphics::Gdi::MONITORINFO {
+                cbSize: std::mem::size_of::<windows::Win32::Graphics::Gdi::MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if windows::Win32::Graphics::Gdi::GetMonitorInfoW(hmon, &mut mi).as_bool() {
+                let mon_bottom = mi.rcMonitor.bottom;
+                let work_bottom = mi.rcWork.bottom;
+                if mon_bottom > work_bottom {
+                    inset = (mon_bottom - work_bottom).clamp(0, 120);
+                }
+            }
+            inset
+        };
+
+        let y = monitor.y + monitor.height - height as i32 - taskbar_bottom_inset;
 
         unsafe {
             let hinstance = GetModuleHandleW(PCWSTR::null())
@@ -107,21 +129,20 @@ impl WallpaperVisualizerWindow {
 
             let surface = ArgbSurface::new(width, height);
 
-            // Attach behind desktop icons (above wallpaper layers)
-            let handle = attach(hwnd, &monitor).context("Failed to attach visualizer to desktop")?;
-
-            tracing::info!(
-                "Created wallpaper visualizer overlay on monitor {} ({}x{}) HWND 0x{:X}",
-                monitor.name,
-                width,
-                height,
-                hwnd.0 as usize
+            // Position at bottom of screen in HWND_BOTTOM Z-order (above wallpaper, beneath all apps)
+            let _ = SetWindowPos(
+                hwnd,
+                HWND_BOTTOM,
+                x,
+                y,
+                width as i32,
+                height as i32,
+                SWP_NOACTIVATE,
             );
 
-            Ok(Box::new(Self {
+            let mut instance = Box::new(Self {
                 hwnd,
                 monitor: monitor.clone(),
-                attach_handle: Some(handle),
                 surface,
                 hdc_screen,
                 hdc_mem,
@@ -134,7 +155,27 @@ impl WallpaperVisualizerWindow {
                 height,
                 x,
                 y,
-            }))
+            });
+
+            // Commit initial clear transparent frame before showing window to prevent any black flicker
+            instance.clear_frame(config.opacity);
+
+            let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(
+                hwnd,
+                windows::Win32::UI::WindowsAndMessaging::SW_SHOWNOACTIVATE,
+            );
+
+            tracing::info!(
+                "Created wallpaper visualizer overlay on monitor {} ({}x{} at {},{}) HWND 0x{:X}",
+                monitor.name,
+                width,
+                height,
+                x,
+                y,
+                hwnd.0 as usize
+            );
+
+            Ok(instance)
         }
     }
 
@@ -291,7 +332,7 @@ impl WallpaperVisualizerWindow {
                 AlphaFormat: 1, // AC_SRC_ALPHA
             };
 
-            let _ = UpdateLayeredWindow(
+            let ok = UpdateLayeredWindow(
                 self.hwnd,
                 self.hdc_screen,
                 Some(&pt_dst),
@@ -302,13 +343,25 @@ impl WallpaperVisualizerWindow {
                 Some(&blend),
                 ULW_ALPHA,
             );
+            if let Err(err) = ok {
+                tracing::warn!("UpdateLayeredWindow FAILED: {:?}", err);
+                eprintln!("UpdateLayeredWindow FAILED: {:?}", err);
+            }
         }
     }
 
     /// Revalidate attachment when monitors or shell change.
     pub fn revalidate(&mut self) -> Result<()> {
-        if let Some(ref mut handle) = self.attach_handle {
-            revalidate(handle)?;
+        unsafe {
+            let _ = SetWindowPos(
+                self.hwnd,
+                HWND_BOTTOM,
+                self.x,
+                self.y,
+                self.width as i32,
+                self.height as i32,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
         }
         Ok(())
     }
@@ -316,9 +369,6 @@ impl WallpaperVisualizerWindow {
 
 impl Drop for WallpaperVisualizerWindow {
     fn drop(&mut self) {
-        if let Some(handle) = self.attach_handle.take() {
-            detach(handle);
-        }
         unsafe {
             if self.hwnd.0 as usize != 0 {
                 let _ = DestroyWindow(self.hwnd);

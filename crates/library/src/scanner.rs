@@ -86,6 +86,14 @@ pub fn read_track_metadata(path: &Path) -> Result<TrackItem> {
         }
     };
 
+    let fallback_title = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string());
+    let final_title = title
+        .filter(|s| !s.trim().is_empty())
+        .or(fallback_title);
+
     let added_at = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
@@ -94,7 +102,7 @@ pub fn read_track_metadata(path: &Path) -> Result<TrackItem> {
     Ok(TrackItem {
         id: track_id,
         path: path.to_string_lossy().to_string(),
-        title,
+        title: final_title,
         artist,
         album,
         duration_ms,

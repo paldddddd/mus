@@ -18,6 +18,28 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_NOREDIRECTIONBITMAP,
 };
 
+/// Check whether the current thread is bound to the interactive `Default` desktop.
+pub fn is_on_default_desktop() -> bool {
+    unsafe {
+        if let Ok(desk) = GetThreadDesktop(GetCurrentThreadId()) {
+            let mut desk_buf = [0u16; 256];
+            let mut desk_needed = 0;
+            let _ = GetUserObjectInformationW(
+                HANDLE(desk.0 as _),
+                UOI_NAME,
+                Some(desk_buf.as_mut_ptr() as *mut _),
+                (desk_buf.len() * 2) as u32,
+                Some(&mut desk_needed),
+            );
+            let desk_len = (desk_needed as usize / 2).saturating_sub(1);
+            let desk_name = String::from_utf16_lossy(&desk_buf[..desk_len]);
+            let clean_name = desk_name.trim_matches('\0').trim();
+            return clean_name.eq_ignore_ascii_case("default");
+        }
+    }
+    true
+}
+
 /// Ensure current thread is bound to WinSta0\Default desktop so it can interact with Explorer.
 pub fn ensure_default_desktop() {
     unsafe {
@@ -55,6 +77,70 @@ pub fn ensure_default_desktop() {
             }
         }
     }
+}
+
+/// Spawn an executable explicitly attached to `winsta0\default` so its UI windows and WebView2
+/// child processes are always visible on the user's real interactive desktop even if the parent
+/// was started inside an isolated desktop/job sandbox.
+pub fn spawn_on_default_desktop(exe: &std::path::Path, args: &[&str]) -> Result<()> {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        CreateProcessW, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW,
+    };
+
+    let mut cmd = format!("\"{}\"", exe.display());
+    for a in args {
+        cmd.push(' ');
+        if a.contains(' ') {
+            cmd.push_str(&format!("\"{a}\""));
+        } else {
+            cmd.push_str(a);
+        }
+    }
+    let mut cmd_wide: Vec<u16> = cmd.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut desktop_wide: Vec<u16> = "winsta0\\default"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let work_dir_wide: Option<Vec<u16>> = exe
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect());
+
+    unsafe {
+        let mut si = STARTUPINFOW::default();
+        si.cb = size_of::<STARTUPINFOW>() as u32;
+        si.lpDesktop = PWSTR(desktop_wide.as_mut_ptr());
+
+        let mut pi = PROCESS_INFORMATION::default();
+        let cur_dir = work_dir_wide
+            .as_ref()
+            .map(|v| PCWSTR(v.as_ptr()))
+            .unwrap_or(PCWSTR::null());
+
+        CreateProcessW(
+            PCWSTR::null(),
+            PWSTR(cmd_wide.as_mut_ptr()),
+            None,
+            None,
+            false,
+            PROCESS_CREATION_FLAGS(0),
+            None,
+            cur_dir,
+            &si,
+            &mut pi,
+        )?;
+
+        if !pi.hThread.is_invalid() {
+            let _ = CloseHandle(pi.hThread);
+        }
+        if !pi.hProcess.is_invalid() {
+            let _ = CloseHandle(pi.hProcess);
+        }
+    }
+    Ok(())
 }
 
 /// Details discovered about the desktop shell topology.
@@ -112,6 +198,39 @@ pub fn detect_topology() -> Result<TopologyInfo> {
     // Check Progman extended styles
     let progman_ex_style = unsafe { GetWindowLongW(progman, GWL_EXSTYLE) } as u32;
     let has_no_redirection = (progman_ex_style & WS_EX_NOREDIRECTIONBITMAP.0) != 0;
+
+    // Check if SHELLDLL_DefView and child WorkerW already exist in Progman before sending 0x052C
+    let existing_defview = unsafe {
+        FindWindowExW(progman, HWND::default(), w!("SHELLDLL_DefView"), PCWSTR::null()).unwrap_or_default()
+    };
+    let existing_worker = unsafe {
+        FindWindowExW(progman, HWND::default(), w!("WorkerW"), PCWSTR::null()).unwrap_or_default()
+    };
+
+    if existing_defview.0 as usize == 0 || existing_worker.0 as usize == 0 {
+        // Send 0x052C to Progman once to trigger shell worker separation
+        let mut send_res: usize = 0;
+        unsafe {
+            let _ = SendMessageTimeoutW(
+                progman,
+                0x052C,
+                WPARAM(0x0000000D),
+                LPARAM(0),
+                SMTO_NORMAL,
+                100,
+                Some(&mut send_res),
+            );
+            let _ = SendMessageTimeoutW(
+                progman,
+                0x052C,
+                WPARAM(0x0000000D),
+                LPARAM(1),
+                SMTO_NORMAL,
+                100,
+                Some(&mut send_res),
+            );
+        }
+    }
 
     // 2. Check if SHELLDLL_DefView is a direct child of Progman
     let defview_in_progman = unsafe {

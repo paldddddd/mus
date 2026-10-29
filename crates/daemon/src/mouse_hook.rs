@@ -6,29 +6,15 @@
 //! - Overhead is minimal: atomic write of (x, y) into static atomics (under 10 nanoseconds), zero allocations.
 //! - Normalized (0.0 .. 1.0) coordinates are forwarded to active wallpapers (e.g. WGSL shaders, WebGL).
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, Ordering};
-use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, MSLLHOOKSTRUCT,
-    WH_MOUSE_LL, WM_MOUSEMOVE,
-};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use windows::Win32::Foundation::POINT;
+use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
-static HOOK_HANDLE: AtomicIsize = AtomicIsize::new(0);
-static MOUSE_X: AtomicI32 = AtomicI32::new(0);
-static MOUSE_Y: AtomicI32 = AtomicI32::new(0);
+static MOUSE_X: AtomicI32 = AtomicI32::new(i32::MIN);
+static MOUSE_Y: AtomicI32 = AtomicI32::new(i32::MIN);
 static MOUSE_MOVED: AtomicBool = AtomicBool::new(false);
 
-unsafe extern "system" fn mouse_ll_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code >= 0 && wparam.0 == WM_MOUSEMOVE as usize && lparam.0 != 0 {
-        let hook_struct = *(lparam.0 as *const MSLLHOOKSTRUCT);
-        MOUSE_X.store(hook_struct.pt.x, Ordering::Relaxed);
-        MOUSE_Y.store(hook_struct.pt.y, Ordering::Relaxed);
-        MOUSE_MOVED.store(true, Ordering::Relaxed);
-    }
-    CallNextHookEx(HHOOK::default(), code, wparam, lparam)
-}
-
-/// Manager responsible for dynamically attaching and detaching the `WH_MOUSE_LL` hook.
+/// Manager responsible for tracking desktop cursor position with zero OS hook lag.
 pub struct MouseHookManager {
     is_active: bool,
 }
@@ -40,60 +26,48 @@ impl Default for MouseHookManager {
 }
 
 impl MouseHookManager {
-    /// Create a new mouse hook manager in the detached state.
+    /// Create a new mouse manager in the inactive state.
     pub fn new() -> Self {
         Self { is_active: false }
     }
 
-    /// Dynamically enable or disable the hook based on desktop visibility and user configuration.
+    /// Dynamically enable or disable cursor tracking based on desktop visibility and user configuration.
     pub fn set_enabled(&mut self, enable: bool) {
-        if enable && !self.is_active {
-            unsafe {
-                let hook = SetWindowsHookExW(
-                    WH_MOUSE_LL,
-                    Some(mouse_ll_proc),
-                    HINSTANCE::default(),
-                    0,
-                );
-                match hook {
-                    Ok(h) => {
-                        HOOK_HANDLE.store(h.0 as isize, Ordering::SeqCst);
-                        self.is_active = true;
-                        tracing::info!("MouseHook: WH_MOUSE_LL installed (desktop active)");
-                    }
-                    Err(e) => {
-                        tracing::warn!("MouseHook: Failed to install WH_MOUSE_LL hook: {e}");
-                    }
-                }
-            }
-        } else if !enable && self.is_active {
-            let handle_val = HOOK_HANDLE.swap(0, Ordering::SeqCst);
-            if handle_val != 0 {
-                unsafe {
-                    let _ = UnhookWindowsHookEx(HHOOK(handle_val as *mut std::ffi::c_void));
-                }
-                self.is_active = false;
-                tracing::info!("MouseHook: WH_MOUSE_LL unhooked (desktop inactive/covered)");
+        if enable != self.is_active {
+            self.is_active = enable;
+            if enable {
+                tracing::info!("MouseHook: cursor tracking enabled (desktop active)");
+            } else {
+                tracing::info!("MouseHook: cursor tracking disabled (desktop inactive/covered)");
             }
         }
     }
 
-    /// Whether the low-level hook is currently installed and active.
+    /// Whether cursor tracking is currently active.
     pub fn is_active(&self) -> bool {
         self.is_active
     }
 
     /// Retrieve the current cursor coordinates if the mouse moved since the last poll.
-    /// Resets the moved flag atomically.
     pub fn poll_position() -> Option<(i32, i32)> {
         if MOUSE_MOVED.swap(false, Ordering::Relaxed) {
-            Some((
+            return Some((
                 MOUSE_X.load(Ordering::Relaxed),
                 MOUSE_Y.load(Ordering::Relaxed),
-            ))
-        } else {
-            None
+            ));
         }
+
+        unsafe {
+            let mut pt = POINT::default();
+            if GetCursorPos(&mut pt).is_ok() {
+                let prev_x = MOUSE_X.swap(pt.x, Ordering::Relaxed);
+                let prev_y = MOUSE_Y.swap(pt.y, Ordering::Relaxed);
+                if pt.x != prev_x || pt.y != prev_y {
+                    return Some((pt.x, pt.y));
+                }
+            }
+        }
+        None
     }
 }
 

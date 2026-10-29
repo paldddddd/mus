@@ -275,7 +275,8 @@ body {
 
 .view-content {
   flex: 1;
-  padding: 24px 32px 100px;
+  min-height: 0;
+  padding: 24px 32px;
   overflow-y: auto;
 }
 
@@ -324,11 +325,57 @@ body {
 
 .btn-danger:hover {
   background: rgba(244, 63, 94, 0.25);
+  transform: translateY(-1px);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: transparent;
+}
+
+.btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-main);
+  border-color: var(--border-subtle);
+}
+
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-icon:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-main);
+}
+
+.btn-group {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 4px;
+  gap: 6px;
+}
+
+.btn-group .btn {
+  border-radius: var(--radius-sm);
+  margin: 0;
 }
 
 .btn-sm {
-  padding: 5px 10px;
-  font-size: 0.8rem;
+  padding: 6px 12px;
+  font-size: 0.82rem;
   border-radius: var(--radius-sm);
 }
 
@@ -386,26 +433,28 @@ body {
 
 /* Bottom Player Bar */
 .player-bar {
-  position: absolute;
-  bottom: 0;
-  left: 240px;
-  right: 0;
-  height: 80px;
-  background: rgba(15, 18, 26, 0.88);
+  flex-shrink: 0;
+  height: 84px;
+  background: linear-gradient(180deg, rgba(20, 25, 38, 0.96) 0%, rgba(12, 15, 24, 0.98) 100%);
   backdrop-filter: blur(20px);
   border-top: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 28px;
+  gap: 16px;
+  padding: 0 24px;
   z-index: 20;
+  box-sizing: border-box;
 }
 
 .player-track-info {
   display: flex;
   align-items: center;
-  gap: 14px;
-  min-width: 240px;
+  gap: 12px;
+  min-width: 180px;
+  max-width: 30%;
+  flex: 1 1 200px;
+  overflow: hidden;
 }
 
 .player-cover {
@@ -415,6 +464,12 @@ body {
   object-fit: cover;
   box-shadow: var(--shadow-md);
   background: #1e2433;
+  flex-shrink: 0;
+}
+
+.player-meta {
+  min-width: 0;
+  overflow: hidden;
 }
 
 .player-meta h4 {
@@ -423,7 +478,6 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 220px;
 }
 
 .player-meta p {
@@ -432,7 +486,6 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 220px;
 }
 
 .player-controls {
@@ -440,8 +493,9 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  flex: 1;
+  flex: 2 1 320px;
   max-width: 520px;
+  min-width: 220px;
 }
 
 .control-buttons {
@@ -495,8 +549,8 @@ body {
 
 .progress-track {
   flex: 1;
-  height: 4px;
-  background: rgba(255, 255, 255, 0.1);
+  height: 6px;
+  background: rgba(255, 255, 255, 0.12);
   border-radius: var(--radius-full);
   position: relative;
   cursor: pointer;
@@ -507,13 +561,16 @@ body {
   height: 100%;
   background: linear-gradient(90deg, var(--accent-primary), var(--accent-cyan));
   border-radius: var(--radius-full);
+  transition: width 0.25s linear;
 }
 
 .player-actions {
   display: flex;
   align-items: center;
-  gap: 14px;
-  min-width: 220px;
+  gap: 12px;
+  min-width: 160px;
+  flex: 1 1 160px;
+  max-width: 240px;
   justify-content: flex-end;
 }
 
@@ -563,4 +620,85 @@ body {
   height: 24px;
   cursor: grab;
   z-index: 5;
+}
+
+/* ==========================================================================
+   Responsive Adaptability (Laptops, High-DPI 125%/150%, Narrow Windows)
+   ========================================================================== */
+@media (max-width: 1100px) {
+  .sidebar {
+    width: 200px;
+    padding: 16px 10px;
+    gap: 16px;
+  }
+  .brand-title {
+    font-size: 1.05rem;
+  }
+  .nav-item {
+    padding: 8px 10px;
+    font-size: 0.86rem;
+    gap: 8px;
+  }
+  .content-header {
+    padding: 16px 20px 12px;
+  }
+  .header-title-group h1 {
+    font-size: 1.25rem;
+  }
+  .view-content {
+    padding: 16px 20px;
+  }
+  .player-actions {
+    min-width: 170px;
+    gap: 8px;
+  }
+  .player-info {
+    min-width: 170px;
+  }
+}
+
+@media (max-width: 860px) {
+  .sidebar {
+    width: 68px;
+    padding: 16px 8px;
+    align-items: center;
+  }
+  .brand-title, .brand-badge, .nav-item span, .status-badge span {
+    display: none;
+  }
+  .app-brand {
+    justify-content: center;
+    padding: 0;
+  }
+  .nav-item {
+    justify-content: center;
+    padding: 12px;
+    border-radius: var(--radius-md);
+  }
+  .content-header {
+    padding: 12px 16px;
+  }
+  .view-content {
+    padding: 12px 16px;
+  }
+  .player-bar {
+    padding: 8px 14px;
+  }
+}
+
+@media (max-height: 720px) {
+  .content-header {
+    padding: 10px 18px 8px;
+  }
+  .view-content {
+    padding: 10px 18px;
+  }
+  .player-bar {
+    height: 72px;
+    padding: 6px 14px;
+  }
+  .player-cover {
+    width: 44px;
+    height: 44px;
+  }
 }

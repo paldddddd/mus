@@ -53,6 +53,21 @@ export interface GovernorConfig {
   unload_after_minutes: number;
 }
 
+export interface CustomWidgetPreset {
+  id: string;
+  name: string;
+  theme: string;
+  visualizer_style: 'bars' | 'wave' | 'mirror' | 'dots' | string;
+  dynamic_accent: boolean;
+  custom_accent: string;
+  corner_radius: number;
+  bg_opacity: number;
+  show_lyrics: boolean;
+  show_visualizer?: boolean;
+  width: number;
+  height: number;
+}
+
 export interface WidgetConfig {
   enabled: boolean;
   x: number;
@@ -65,6 +80,14 @@ export interface WidgetConfig {
   interactive: boolean;
   visualizer_bars: number;
   opacity: number;
+  visualizer_style?: string;
+  dynamic_accent?: boolean;
+  custom_accent?: string;
+  corner_radius?: number;
+  show_lyrics?: boolean;
+  show_visualizer?: boolean;
+  magnetic_snap?: boolean;
+  custom_presets?: CustomWidgetPreset[];
 }
 
 export interface MusicConfig {
@@ -98,6 +121,8 @@ export interface AppConfig {
   active_wallpaper_id?: string;
   fps_limit: number;
   crossfade_duration_ms?: number;
+  wallpaper_change_mode?: 'random' | 'sequential' | 'off';
+  respect_bindings_in_auto_change?: boolean;
   governor: GovernorConfig;
   widget: WidgetConfig;
   music: MusicConfig;

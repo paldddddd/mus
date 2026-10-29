@@ -320,6 +320,10 @@ impl Renderer for ShaderRenderer {
         self.mouse_x.store(x.to_bits(), Ordering::Relaxed);
         self.mouse_y.store(y.to_bits(), Ordering::Relaxed);
     }
+
+    fn update_bass(&mut self, bass: f32) {
+        self.audio_bass.store(bass.to_bits(), Ordering::Relaxed);
+    }
 }
 
 impl Drop for ShaderRenderer {
@@ -524,8 +528,8 @@ fn run_wgpu_loop(params: ShaderRenderParams) -> Result<()> {
             }
         }
 
-        // Cap to ~30 FPS (33ms per frame) to respect battery and Eco profile
-        std::thread::sleep(Duration::from_millis(33));
+        // Smooth ~60 FPS frame pacing alongside PresentMode::Fifo
+        std::thread::sleep(Duration::from_millis(14));
     }
 
     Ok(())

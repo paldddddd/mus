@@ -12,8 +12,25 @@ pub fn collect_diag() -> Result<DiagReport> {
     let shell_windows = collect_shell_windows();
     let gpu_adapter = query_primary_gpu();
 
+    let os_product_name = if major == 10 && build >= 22000 {
+        let release = if build >= 26100 {
+            " 24H2"
+        } else if build >= 22631 {
+            " 23H2"
+        } else if build >= 22621 {
+            " 22H2"
+        } else {
+            " 21H2"
+        };
+        format!("Windows 11{} (Build {})", release, build)
+    } else if major == 10 {
+        format!("Windows 10 (Build {})", build)
+    } else {
+        format!("Windows {}.{} (Build {})", major, minor, build)
+    };
+
     Ok(DiagReport {
-        os_product_name: format!("Windows {}.{} (Build {})", major, minor, build),
+        os_product_name,
         os_build: build.to_string(),
         os_ubr: 0,
         topology: topo_info.topology,

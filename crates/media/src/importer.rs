@@ -15,26 +15,54 @@ pub fn find_tool(name: &str) -> Option<PathBuf> {
         name.to_string()
     };
 
-    // 1. Next to current executable
+    // 1. Next to current executable and adjacent subdirectories
     if let Ok(current_exe) = env::current_exe() {
         if let Some(parent) = current_exe.parent() {
-            let candidate = parent.join(&exe_name);
-            if candidate.exists() {
-                return Some(candidate);
+            let candidates = [
+                parent.join(&exe_name),
+                parent.join("wallmus").join(&exe_name),
+                parent.join("deps").join(&exe_name),
+            ];
+            for c in candidates {
+                if c.exists() {
+                    return Some(c);
+                }
+            }
+            if let Some(grandparent) = parent.parent() {
+                let gp_candidates = [
+                    grandparent.join("deps").join(&exe_name),
+                    grandparent.join("dist").join(&exe_name),
+                    grandparent.join("dist").join("wallmus").join(&exe_name),
+                    grandparent.join("target").join("release").join(&exe_name),
+                    grandparent.join("target").join("debug").join(&exe_name),
+                ];
+                for c in gp_candidates {
+                    if c.exists() {
+                        return Some(c);
+                    }
+                }
             }
         }
     }
 
-    // 2. In deps directory
+    // 2. In deps directory relative to cwd
     let deps_candidate = PathBuf::from("deps").join(&exe_name);
     if deps_candidate.exists() {
         return Some(deps_candidate);
+    }
+    let dist_candidate = PathBuf::from("dist").join("wallmus").join(&exe_name);
+    if dist_candidate.exists() {
+        return Some(dist_candidate);
     }
 
     // 3. In target debug/release
     let target_debug = PathBuf::from("target/debug").join(&exe_name);
     if target_debug.exists() {
         return Some(target_debug);
+    }
+    let target_release = PathBuf::from("target/release").join(&exe_name);
+    if target_release.exists() {
+        return Some(target_release);
     }
 
     // 4. In PATH
@@ -117,7 +145,21 @@ pub fn probe_media(file_path: &Path) -> Result<MediaProbe> {
         });
     }
 
-    let ffprobe = find_tool("ffprobe").context("ffprobe tool not found in project or PATH")?;
+    let is_static_image = matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "bmp" | "webp");
+    let ffprobe_opt = find_tool("ffprobe");
+    if is_static_image && ffprobe_opt.is_none() {
+        return Ok(MediaProbe {
+            kind: WallpaperKind::Image,
+            codec: ext,
+            width: 1920,
+            height: 1080,
+            fps: 0.0,
+            duration_ms: 0,
+            is_animated: false,
+        });
+    }
+
+    let ffprobe = ffprobe_opt.context("ffprobe tool not found in project or PATH")?;
 
     let output = Command::new(ffprobe)
         .arg("-v")
@@ -201,13 +243,26 @@ pub fn probe_media(file_path: &Path) -> Result<MediaProbe> {
 
 /// Generate a WebP thumbnail around 320px width.
 pub fn generate_thumbnail(input: &Path, output: &Path) -> Result<()> {
-    let ffmpeg = find_tool("ffmpeg").context("ffmpeg tool not found in project or PATH")?;
-
     let ext = input
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
+
+    let is_static_image = matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "bmp" | "webp");
+
+    let ffmpeg = match find_tool("ffmpeg") {
+        Some(f) => f,
+        None => {
+            if is_static_image {
+                tracing::info!("ffmpeg not found; copying static image directly for thumbnail: {}", input.display());
+                fs::copy(input, output).context("Failed to copy image to thumbnail path")?;
+                return Ok(());
+            } else {
+                bail!("ffmpeg tool not found in project or PATH to generate video thumbnail");
+            }
+        }
+    };
 
     if ext == "html" || ext == "htm" || ext == "wgsl" {
         let col = if ext == "wgsl" { "0x8B5CF6" } else { "0x06B6D4" };
@@ -244,31 +299,41 @@ pub fn generate_thumbnail(input: &Path, output: &Path) -> Result<()> {
         .arg(output)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
-        .context("Failed to execute ffmpeg for thumbnail generation")?;
+        .status();
 
-    if !status.success() {
-        // Fallback without -ss if media is very short
-        let status2 = Command::new(ffmpeg)
-            .arg("-y")
-            .arg("-i")
-            .arg(input)
-            .arg("-vf")
-            .arg("scale=320:-1")
-            .arg("-vframes")
-            .arg("1")
-            .arg(output)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .context("Failed to execute ffmpeg fallback thumbnail generation")?;
-
-        if !status2.success() {
-            bail!("Failed to generate thumbnail for: {}", input.display());
+    if let Ok(s) = status {
+        if s.success() {
+            return Ok(());
         }
     }
 
-    Ok(())
+    // Fallback without -ss if media is very short or first frame needed
+    let status2 = Command::new(&ffmpeg)
+        .arg("-y")
+        .arg("-i")
+        .arg(input)
+        .arg("-vf")
+        .arg("scale=320:-1")
+        .arg("-vframes")
+        .arg("1")
+        .arg(output)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    if let Ok(s2) = status2 {
+        if s2.success() {
+            return Ok(());
+        }
+    }
+
+    if is_static_image {
+        tracing::warn!("ffmpeg thumbnail generation failed; copying original static image: {}", input.display());
+        fs::copy(input, output).context("Failed to copy image to thumbnail fallback")?;
+        return Ok(());
+    }
+
+    bail!("Failed to generate thumbnail for: {}", input.display());
 }
 
 /// Convert GIF/APNG/animated WebP into MP4 (H.264, yuv420p) for optimal HWDEC.

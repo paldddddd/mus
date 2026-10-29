@@ -4,8 +4,6 @@
   "version": "0.1.0",
   "identifier": "com.wallmus.ui",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
@@ -20,18 +18,6 @@
         "minHeight": 620,
         "resizable": true,
         "visible": true
-      },
-      {
-        "label": "widget",
-        "title": "wallmus Widget",
-        "width": 380,
-        "height": 130,
-        "decorations": false,
-        "transparent": true,
-        "skipTaskbar": true,
-        "alwaysOnTop": false,
-        "resizable": false,
-        "visible": false
       }
     ],
     "security": {

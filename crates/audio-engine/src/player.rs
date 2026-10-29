@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{info, warn};
@@ -52,6 +52,9 @@ pub struct LocalPlayer {
     shuffle: Arc<AtomicBool>,
     on_track_changed: Arc<Mutex<Option<TrackChangeCallback>>>,
     rng_seed: Arc<Mutex<u64>>,
+    is_playing_cache: Arc<AtomicBool>,
+    position_ms_cache: Arc<AtomicU64>,
+    active_local: Arc<AtomicBool>,
 }
 
 impl LocalPlayer {
@@ -85,6 +88,10 @@ impl LocalPlayer {
             .unwrap_or_default()
             .as_nanos() as u64;
 
+        let is_playing_cache = Arc::new(AtomicBool::new(false));
+        let position_ms_cache = Arc::new(AtomicU64::new(0));
+        let active_local = Arc::new(AtomicBool::new(false));
+
         let player = Self {
             _stream_running: stream_running,
             stream_handle,
@@ -96,10 +103,21 @@ impl LocalPlayer {
             shuffle: Arc::new(AtomicBool::new(false)),
             on_track_changed: Arc::new(Mutex::new(None)),
             rng_seed: Arc::new(Mutex::new(initial_seed)),
+            is_playing_cache,
+            position_ms_cache,
+            active_local,
         };
 
         player.spawn_auto_advance_monitor();
         player
+    }
+
+    pub fn is_active_local(&self) -> bool {
+        self.active_local.load(Ordering::SeqCst)
+    }
+
+    pub fn set_active_local(&self, active: bool) {
+        self.active_local.store(active, Ordering::SeqCst);
     }
 
     /// Register callback invoked whenever the currently playing track changes.
@@ -122,6 +140,9 @@ impl LocalPlayer {
         let stream_handle = self.stream_handle.clone();
         let volume_arc = self.volume.clone();
         let on_change_arc = self.on_track_changed.clone();
+        let is_playing_cache = self.is_playing_cache.clone();
+        let position_ms_cache = self.position_ms_cache.clone();
+        let active_local = self.active_local.clone();
 
         let _ = std::thread::Builder::new()
             .name("player-monitor".to_string())
@@ -129,12 +150,27 @@ impl LocalPlayer {
                 let mut had_track_playing = false;
 
                 while running_arc.load(Ordering::SeqCst) {
-                    std::thread::sleep(Duration::from_millis(250));
+                    std::thread::sleep(Duration::from_millis(100));
+
+                    // Non-blocking update of atomic status & position
+                    if let Ok(sink_guard) = sink_arc.try_lock() {
+                        if let Some(ref sink) = *sink_guard {
+                            let playing = !sink.is_paused() && !sink.empty();
+                            is_playing_cache.store(playing, Ordering::Relaxed);
+                            let pos = sink.get_pos().as_millis() as u64;
+                            position_ms_cache.store(pos, Ordering::Relaxed);
+                        } else {
+                            is_playing_cache.store(false, Ordering::Relaxed);
+                        }
+                    }
 
                     let is_empty = {
-                        let sink_guard = sink_arc.lock().unwrap();
-                        if let Some(ref sink) = *sink_guard {
-                            sink.empty()
+                        if let Ok(sink_guard) = sink_arc.try_lock() {
+                            if let Some(ref sink) = *sink_guard {
+                                sink.empty()
+                            } else {
+                                false
+                            }
                         } else {
                             false
                         }
@@ -194,9 +230,10 @@ impl LocalPlayer {
                                 &current_idx_arc,
                                 &volume_arc,
                                 &on_change_arc,
+                                &is_playing_cache,
+                                &position_ms_cache,
+                                &active_local,
                             );
-                        } else {
-                            *current_idx_arc.lock().unwrap() = None;
                         }
                     }
                 }
@@ -228,6 +265,20 @@ impl LocalPlayer {
         self.queue.lock().unwrap().clear();
     }
 
+    pub fn play_track(&self, track: LocalTrack) -> Result<()> {
+        let existing_idx = {
+            let mut queue = self.queue.lock().unwrap();
+            if let Some(pos) = queue.iter().position(|t| t.id == track.id || t.path == track.path) {
+                queue[pos] = track;
+                pos
+            } else {
+                queue.push(track);
+                queue.len() - 1
+            }
+        };
+        self.play_index(existing_idx)
+    }
+
     pub fn play_file(&self, path: &Path, title: String, artist: String) -> Result<()> {
         let track = LocalTrack {
             id: format!("local_{}", path.file_stem().unwrap_or_default().to_string_lossy()),
@@ -238,13 +289,7 @@ impl LocalPlayer {
             duration_ms: 0,
             cover_path: None,
         };
-
-        let mut queue = self.queue.lock().unwrap();
-        queue.clear();
-        queue.push(track);
-        drop(queue);
-
-        self.play_index(0)
+        self.play_track(track)
     }
 
     pub fn play_index(&self, index: usize) -> Result<()> {
@@ -256,22 +301,38 @@ impl LocalPlayer {
             &self.current_index,
             &self.volume,
             &self.on_track_changed,
+            &self.is_playing_cache,
+            &self.position_ms_cache,
+            &self.active_local,
         )
     }
 
     pub fn play(&self) {
-        if let Some(ref sink) = *self.sink.lock().unwrap() {
-            sink.play();
-        } else if self.current_index.lock().unwrap().is_some() {
-            if let Some(idx) = *self.current_index.lock().unwrap() {
-                let _ = self.play_index(idx);
+        self.active_local.store(true, Ordering::SeqCst);
+        let can_resume = {
+            let guard = self.sink.lock().unwrap();
+            guard.as_ref().map(|s| !s.empty()).unwrap_or(false)
+        };
+        if can_resume {
+            if let Some(ref sink) = *self.sink.lock().unwrap() {
+                sink.play();
+                self.is_playing_cache.store(true, Ordering::SeqCst);
             }
-        } else if !self.queue.lock().unwrap().is_empty() {
+            return;
+        }
+        let cur_idx = *self.current_index.lock().unwrap();
+        if let Some(idx) = cur_idx {
+            let _ = self.play_index(idx);
+            return;
+        }
+        let has_tracks = !self.queue.lock().unwrap().is_empty();
+        if has_tracks {
             let _ = self.play_index(0);
         }
     }
 
     pub fn pause(&self) {
+        self.is_playing_cache.store(false, Ordering::SeqCst);
         if let Some(ref sink) = *self.sink.lock().unwrap() {
             sink.pause();
         }
@@ -286,19 +347,20 @@ impl LocalPlayer {
     }
 
     pub fn stop(&self) {
-        if let Some(ref sink) = *self.sink.lock().unwrap() {
-            sink.stop();
+        self.active_local.store(false, Ordering::SeqCst);
+        self.is_playing_cache.store(false, Ordering::SeqCst);
+        self.position_ms_cache.store(0, Ordering::SeqCst);
+        {
+            let mut sink_guard = self.sink.lock().unwrap();
+            if let Some(old) = sink_guard.take() {
+                old.stop();
+            }
         }
-        *self.sink.lock().unwrap() = None;
         *self.current_index.lock().unwrap() = None;
     }
 
     pub fn is_playing(&self) -> bool {
-        if let Some(ref sink) = *self.sink.lock().unwrap() {
-            !sink.is_paused() && !sink.empty()
-        } else {
-            false
-        }
+        self.is_playing_cache.load(Ordering::Relaxed)
     }
 
     pub fn set_volume(&self, volume: f32) {
@@ -314,19 +376,18 @@ impl LocalPlayer {
     }
 
     pub fn seek(&self, pos: Duration) -> Result<()> {
-        if let Some(ref sink) = *self.sink.lock().unwrap() {
-            sink.try_seek(pos)
-                .map_err(|e| anyhow::anyhow!("Failed to seek within audio track: {e:?}"))?;
+        let ms = pos.as_millis() as u64;
+        self.position_ms_cache.store(ms, Ordering::Relaxed);
+        if let Ok(sink_guard) = self.sink.try_lock() {
+            if let Some(ref sink) = *sink_guard {
+                let _ = sink.try_seek(pos);
+            }
         }
         Ok(())
     }
 
     pub fn get_position(&self) -> Duration {
-        if let Some(ref sink) = *self.sink.lock().unwrap() {
-            sink.get_pos()
-        } else {
-            Duration::ZERO
-        }
+        Duration::from_millis(self.position_ms_cache.load(Ordering::Relaxed))
     }
 
     pub fn current_track(&self) -> Option<LocalTrack> {
@@ -407,18 +468,26 @@ impl LocalPlayer {
 
     /// Snapshot player state for persistence across daemon restarts.
     pub fn get_state(&self) -> PlayerState {
+        let queue = self.queue.lock().unwrap().clone();
+        let current_index = *self.current_index.lock().unwrap();
+        let volume = *self.volume.lock().unwrap();
+        let repeat_mode = *self.repeat_mode.lock().unwrap();
+        let shuffle = self.shuffle.load(Ordering::SeqCst);
+        let position_ms = self.get_position().as_millis() as u64;
         PlayerState {
-            queue: self.queue.lock().unwrap().clone(),
-            current_index: *self.current_index.lock().unwrap(),
-            volume: *self.volume.lock().unwrap(),
-            repeat_mode: *self.repeat_mode.lock().unwrap(),
-            shuffle: self.shuffle.load(Ordering::SeqCst),
-            position_ms: self.get_position().as_millis() as u64,
+            queue,
+            current_index,
+            volume,
+            repeat_mode,
+            shuffle,
+            position_ms,
         }
     }
 
     /// Restore player state from saved snapshot.
     pub fn load_state(&self, state: PlayerState) {
+        self.active_local.store(false, Ordering::SeqCst);
+        self.is_playing_cache.store(false, Ordering::SeqCst);
         *self.queue.lock().unwrap() = state.queue;
         *self.volume.lock().unwrap() = state.volume;
         *self.repeat_mode.lock().unwrap() = state.repeat_mode;
@@ -449,6 +518,9 @@ fn play_index_internal(
     current_idx_arc: &Arc<Mutex<Option<usize>>>,
     volume_arc: &Arc<Mutex<f32>>,
     on_change_arc: &Arc<Mutex<Option<TrackChangeCallback>>>,
+    is_playing_cache: &Arc<AtomicBool>,
+    position_ms_cache: &Arc<AtomicU64>,
+    active_local: &Arc<AtomicBool>,
 ) -> Result<()> {
     let handle = stream_handle
         .as_ref()
@@ -458,11 +530,34 @@ fn play_index_internal(
     let track = queue.get(index).cloned().context("Invalid track index")?;
     drop(queue);
 
-    let file = File::open(&track.path)
-        .with_context(|| format!("Failed to open audio file: {}", track.path))?;
+    let file = match File::open(&track.path) {
+        Ok(f) => f,
+        Err(e) => {
+            is_playing_cache.store(false, Ordering::SeqCst);
+            return Err(anyhow::anyhow!("Failed to open audio file {}: {}", track.path, e));
+        }
+    };
     let reader = BufReader::new(file);
-    let source = Decoder::new(reader)
-        .with_context(|| format!("Failed to decode audio file: {}", track.path))?;
+    let source = match Decoder::new(reader) {
+        Ok(s) => s,
+        Err(e) => {
+            is_playing_cache.store(false, Ordering::SeqCst);
+            return Err(anyhow::anyhow!("Failed to decode audio file {}: {}", track.path, e));
+        }
+    };
+
+    let mut track = track;
+    if track.duration_ms == 0 {
+        if let Some(dur) = rodio::Source::total_duration(&source) {
+            let ms = dur.as_millis() as u64;
+            if ms > 0 {
+                track.duration_ms = ms;
+                if let Some(q_item) = queue_arc.lock().unwrap().get_mut(index) {
+                    q_item.duration_ms = ms;
+                }
+            }
+        }
+    }
 
     let new_sink = Sink::try_new(handle).context("Failed to create audio Sink")?;
     let vol = *volume_arc.lock().unwrap();
@@ -470,17 +565,23 @@ fn play_index_internal(
     new_sink.append(source);
     new_sink.play();
 
-    let mut sink_guard = sink_arc.lock().unwrap();
-    if let Some(old) = sink_guard.take() {
-        old.stop();
+    {
+        let mut sink_guard = sink_arc.lock().unwrap();
+        if let Some(old) = sink_guard.take() {
+            old.stop();
+        }
+        *sink_guard = Some(new_sink);
     }
-    *sink_guard = Some(new_sink);
     *current_idx_arc.lock().unwrap() = Some(index);
+    active_local.store(true, Ordering::SeqCst);
+    is_playing_cache.store(true, Ordering::SeqCst);
+    position_ms_cache.store(0, Ordering::SeqCst);
 
     info!("Local player playing track: {} - {}", track.artist, track.title);
 
-    // Invoke track changed callback
-    if let Some(ref cb) = *on_change_arc.lock().unwrap() {
+    // Invoke track changed callback after releasing all player locks
+    let cb_opt = on_change_arc.lock().unwrap().clone();
+    if let Some(cb) = cb_opt {
         cb(&track);
     }
 

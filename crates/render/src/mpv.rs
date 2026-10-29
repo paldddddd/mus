@@ -33,49 +33,92 @@ struct MpvVTable {
     error_string: MpvErrorStringFn,
 }
 
-static MPV_VTABLE: OnceLock<Option<MpvVTable>> = OnceLock::new();
+static MPV_VTABLE: OnceLock<MpvVTable> = OnceLock::new();
 
-fn get_vtable() -> Option<&'static MpvVTable> {
-    MPV_VTABLE
-        .get_or_init(|| {
-            unsafe {
-                // Try libmpv-2.dll then mpv-2.dll
-                let names = ["libmpv-2.dll", "mpv-2.dll", "deps\\libmpv-2.dll"];
-                let mut hmod = HMODULE::default();
-                for name in &names {
-                    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
-                    if let Ok(m) = LoadLibraryW(PCWSTR(wide.as_ptr())) {
-                        if !m.is_invalid() {
-                            hmod = m;
-                            break;
-                        }
+fn try_load_vtable() -> Option<MpvVTable> {
+    unsafe {
+        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(exe) = std::env::current_exe() {
+            let exe_clean = exe
+                .to_string_lossy()
+                .strip_prefix(r"\\?\")
+                .map(std::path::PathBuf::from)
+                .unwrap_or(exe);
+            if let Some(dir) = exe_clean.parent() {
+                candidates.push(dir.join("libmpv-2.dll"));
+                candidates.push(dir.join("mpv-2.dll"));
+                candidates.push(dir.join("wallmus\\libmpv-2.dll"));
+                candidates.push(dir.join("deps\\libmpv-2.dll"));
+                if let Some(p1) = dir.parent() {
+                    candidates.push(p1.join("libmpv-2.dll"));
+                    candidates.push(p1.join("deps\\libmpv-2.dll"));
+                    candidates.push(p1.join("dist\\libmpv-2.dll"));
+                    candidates.push(p1.join("dist\\wallmus\\libmpv-2.dll"));
+                    if let Some(p2) = p1.parent() {
+                        candidates.push(p2.join("deps\\libmpv-2.dll"));
+                        candidates.push(p2.join("dist\\libmpv-2.dll"));
+                        candidates.push(p2.join("dist\\wallmus\\libmpv-2.dll"));
                     }
                 }
-
-                if hmod.is_invalid() {
-                    return None;
-                }
-
-                let load = |name: &CStr| -> Option<*const ()> {
-                    let proc = GetProcAddress(hmod, windows::core::PCSTR(name.as_ptr() as _));
-                    proc.map(|p| p as _)
-                };
-
-                let vtable = MpvVTable {
-                    create: std::mem::transmute::<*const (), MpvCreateFn>(load(c"mpv_create")?),
-                    initialize: std::mem::transmute::<*const (), MpvInitializeFn>(load(c"mpv_initialize")?),
-                    terminate_destroy: std::mem::transmute::<*const (), MpvTerminateDestroyFn>(load(c"mpv_terminate_destroy")?),
-                    set_option_string: std::mem::transmute::<*const (), MpvSetOptionStringFn>(load(c"mpv_set_option_string")?),
-                    set_property_string: std::mem::transmute::<*const (), MpvSetPropertyStringFn>(load(c"mpv_set_property_string")?),
-                    command_string: std::mem::transmute::<*const (), MpvCommandStringFn>(load(c"mpv_command_string")?),
-                    client_api_version: std::mem::transmute::<*const (), MpvClientApiVersionFn>(load(c"mpv_client_api_version")?),
-                    error_string: std::mem::transmute::<*const (), MpvErrorStringFn>(load(c"mpv_error_string")?),
-                };
-
-                Some(vtable)
             }
-        })
-        .as_ref()
+        }
+        candidates.push("libmpv-2.dll".into());
+        candidates.push("mpv-2.dll".into());
+        candidates.push("deps\\libmpv-2.dll".into());
+        candidates.push("dist\\libmpv-2.dll".into());
+        candidates.push("dist\\wallmus\\libmpv-2.dll".into());
+
+        let mut hmod = HMODULE::default();
+        for path in &candidates {
+            let wide: Vec<u16> = path
+                .to_string_lossy()
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            if let Ok(m) = LoadLibraryW(PCWSTR(wide.as_ptr())) {
+                if !m.is_invalid() {
+                    tracing::info!("Loaded libmpv from: {}", path.display());
+                    hmod = m;
+                    break;
+                }
+            }
+        }
+
+        if hmod.is_invalid() {
+            tracing::warn!("Could not load libmpv-2.dll from any candidate path: {:?}", candidates);
+            return None;
+        }
+
+        let load = |name: &CStr| -> Option<*const ()> {
+            let proc = GetProcAddress(hmod, windows::core::PCSTR(name.as_ptr() as _));
+            if proc.is_none() {
+                tracing::warn!("libmpv symbol missing: {:?}", name);
+            }
+            proc.map(|p| p as _)
+        };
+
+        let vtable = MpvVTable {
+            create: std::mem::transmute::<*const (), MpvCreateFn>(load(c"mpv_create")?),
+            initialize: std::mem::transmute::<*const (), MpvInitializeFn>(load(c"mpv_initialize")?),
+            terminate_destroy: std::mem::transmute::<*const (), MpvTerminateDestroyFn>(load(c"mpv_terminate_destroy")?),
+            set_option_string: std::mem::transmute::<*const (), MpvSetOptionStringFn>(load(c"mpv_set_option_string")?),
+            set_property_string: std::mem::transmute::<*const (), MpvSetPropertyStringFn>(load(c"mpv_set_property_string")?),
+            command_string: std::mem::transmute::<*const (), MpvCommandStringFn>(load(c"mpv_command_string")?),
+            client_api_version: std::mem::transmute::<*const (), MpvClientApiVersionFn>(load(c"mpv_client_api_version")?),
+            error_string: std::mem::transmute::<*const (), MpvErrorStringFn>(load(c"mpv_error_string")?),
+        };
+
+        Some(vtable)
+    }
+}
+
+fn get_vtable() -> Option<&'static MpvVTable> {
+    if let Some(vt) = MPV_VTABLE.get() {
+        return Some(vt);
+    }
+    let loaded = try_load_vtable()?;
+    let _ = MPV_VTABLE.set(loaded);
+    MPV_VTABLE.get()
 }
 
 /// Query libmpv version string if library is present.
@@ -94,6 +137,8 @@ pub struct MpvRenderer {
     width: i32,
     height: i32,
     loaded: bool,
+    mouse_pos: (f32, f32),
+    bass_pulse: f32,
 }
 
 // SAFETY: MpvRenderer controls its handle and HWND via thread-safe C API.
@@ -109,6 +154,8 @@ impl MpvRenderer {
             width,
             height,
             loaded: false,
+            mouse_pos: (0.5, 0.5),
+            bass_pulse: 0.0,
         })
     }
 
@@ -120,6 +167,29 @@ impl MpvRenderer {
         let c_msg = unsafe { (vt.error_string)(code) };
         let msg = unsafe { CStr::from_ptr(c_msg) }.to_string_lossy();
         bail!("mpv error during '{}': {} (code {})", action, msg, code);
+    }
+
+    fn sync_viewport(&self) {
+        if !self.loaded || self.handle.is_null() {
+            return;
+        }
+        if let Some(vt) = get_vtable() {
+            let (x, y) = self.mouse_pos;
+            let pan_x = (0.5 - x.clamp(0.0, 1.0)) * 0.035;
+            let pan_y = (0.5 - y.clamp(0.0, 1.0)) * 0.035;
+            let zoom = 0.05 + self.bass_pulse.clamp(0.0, 1.0) * 0.065;
+            if let (Ok(cx), Ok(cy), Ok(cz)) = (
+                std::ffi::CString::new(format!("{:.4}", pan_x)),
+                std::ffi::CString::new(format!("{:.4}", pan_y)),
+                std::ffi::CString::new(format!("{:.4}", zoom)),
+            ) {
+                unsafe {
+                    let _ = (vt.set_property_string)(self.handle, c"video-zoom".as_ptr(), cz.as_ptr());
+                    let _ = (vt.set_property_string)(self.handle, c"video-pan-x".as_ptr(), cx.as_ptr());
+                    let _ = (vt.set_property_string)(self.handle, c"video-pan-y".as_ptr(), cy.as_ptr());
+                }
+            }
+        }
     }
 }
 
@@ -228,5 +298,21 @@ impl Renderer for MpvRenderer {
         }
         self.loaded = false;
         Ok(())
+    }
+
+    fn update_mouse(&mut self, x: f32, y: f32) {
+        if (self.mouse_pos.0 - x).abs() > 0.0005 || (self.mouse_pos.1 - y).abs() > 0.0005 {
+            self.mouse_pos = (x, y);
+            self.sync_viewport();
+        }
+    }
+
+    fn update_bass(&mut self, bass: f32) {
+        let prev = self.bass_pulse;
+        let target = bass.clamp(0.0, 1.0);
+        if (target - prev).abs() > 0.004 {
+            self.bass_pulse = target;
+            self.sync_viewport();
+        }
     }
 }

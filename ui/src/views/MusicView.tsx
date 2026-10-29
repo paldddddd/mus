@@ -5,19 +5,27 @@ import {
   Folder,
   Radio,
   Play,
+  Pause,
+  Square,
   HardDrive,
   Clock,
+  Plus,
 } from 'lucide-react';
-import { MusicSource, TrackItem } from '../types';
+import { CurrentTrackInfo, MusicSource, TrackItem } from '../types';
 import { Language, translations } from '../i18n';
+import { requestDaemon } from '../api/ipc';
 
 interface MusicViewProps {
   tracks: TrackItem[];
   folders: string[];
   activeSource: MusicSource;
+  currentTrack?: CurrentTrackInfo;
   onSetSource: (src: MusicSource) => Promise<void>;
   onAddFolder: (folderPath: string) => Promise<void>;
+  onPickAudioFile: () => Promise<TrackItem | null>;
   onPlayTrack: (track: TrackItem) => Promise<void>;
+  onTogglePlay: () => Promise<void>;
+  onStopTrack: () => Promise<void>;
   onScanNow: () => Promise<void>;
   lang: Language;
 }
@@ -26,9 +34,13 @@ export const MusicView: React.FC<MusicViewProps> = ({
   tracks,
   folders,
   activeSource,
+  currentTrack,
   onSetSource,
   onAddFolder,
+  onPickAudioFile,
   onPlayTrack,
+  onTogglePlay,
+  onStopTrack,
   onScanNow,
   lang,
 }) => {
@@ -57,9 +69,21 @@ export const MusicView: React.FC<MusicViewProps> = ({
 
   const handleAddFolderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newFolderPath.trim()) return;
+    if (!newFolderPath.trim()) {
+      try {
+        const res = await requestDaemon<{ path: string | null }>('app.pickMusicFolder');
+        if (res?.path) {
+          await onAddFolder(res.path);
+          await onScanNow();
+        }
+      } catch (err) {
+        console.error('Failed to pick folder:', err);
+      }
+      return;
+    }
     await onAddFolder(newFolderPath.trim());
     setNewFolderPath('');
+    await onScanNow();
   };
 
   return (
@@ -94,12 +118,18 @@ export const MusicView: React.FC<MusicViewProps> = ({
 
       {/* Monitored Folders Section */}
       <div className="glass-card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
           <h3 style={{ fontSize: '0.95rem', fontWeight: 600 }}>{t.monitored_folders}</h3>
-          <button className="btn btn-secondary btn-sm" onClick={onScanNow}>
-            <RefreshCw size={13} />
-            <span>{t.scan_now_btn}</span>
-          </button>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button className="btn btn-primary btn-sm" onClick={() => onPickAudioFile()}>
+              <Plus size={14} />
+              <span>{lang === 'ru' ? 'Добавить трек (файл)' : 'Add Track (File)'}</span>
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={onScanNow}>
+              <RefreshCw size={13} />
+              <span>{t.scan_now_btn}</span>
+            </button>
+          </div>
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
@@ -171,34 +201,102 @@ export const MusicView: React.FC<MusicViewProps> = ({
               </tr>
             </thead>
             <tbody>
-              {filteredTracks.map((tr, idx) => (
-                <tr
-                  key={tr.id}
-                  onClick={() => onPlayTrack(tr)}
-                  style={{
-                    borderBottom: '1px solid rgba(255, 255, 255, 0.03)',
-                    cursor: 'pointer',
-                    transition: 'background 0.15s ease',
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                >
-                  <td style={{ padding: '10px 12px', color: 'var(--text-dim)', width: '40px' }}>
-                    {idx + 1}
-                  </td>
-                  <td style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--text-main)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <Play size={12} fill="currentColor" style={{ opacity: 0.5 }} />
-                      <span>{tr.title || 'Untitled Track'}</span>
-                    </div>
-                  </td>
-                  <td style={{ padding: '10px 12px', color: 'var(--text-muted)' }}>{tr.artist || '—'}</td>
-                  <td style={{ padding: '10px 12px', color: 'var(--text-muted)' }}>{tr.album || '—'}</td>
-                  <td style={{ padding: '10px 12px', color: 'var(--text-dim)', textAlign: 'right' }}>
-                    {formatDuration(tr.duration_ms)}
-                  </td>
-                </tr>
-              ))}
+              {filteredTracks.map((tr, idx) => {
+                const isCurrent =
+                  currentTrack?.key === tr.id ||
+                  (Boolean(currentTrack?.title) &&
+                    Boolean(tr.title) &&
+                    currentTrack?.source === 'local' &&
+                    currentTrack?.title?.toLowerCase() === tr.title?.toLowerCase());
+                const isPlaying = isCurrent && currentTrack?.playback_status === 'Playing';
+
+                return (
+                  <tr
+                    key={tr.id}
+                    onClick={() => {
+                      if (isCurrent) {
+                        onTogglePlay();
+                      } else {
+                        onPlayTrack(tr);
+                      }
+                    }}
+                    style={{
+                      borderBottom: '1px solid rgba(255, 255, 255, 0.03)',
+                      background: isPlaying ? 'rgba(6, 182, 212, 0.12)' : 'transparent',
+                      cursor: 'pointer',
+                      transition: 'background 0.15s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isPlaying) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = isPlaying
+                        ? 'rgba(6, 182, 212, 0.12)'
+                        : 'transparent';
+                    }}
+                  >
+                    <td style={{ padding: '10px 12px', color: 'var(--text-dim)', width: '40px' }}>
+                      {idx + 1}
+                    </td>
+                    <td
+                      style={{
+                        padding: '10px 12px',
+                        fontWeight: 600,
+                        color: isPlaying ? '#22d3ee' : 'var(--text-main)',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        {isPlaying ? (
+                          <Pause size={13} fill="currentColor" color="#22d3ee" />
+                        ) : (
+                          <Play size={12} fill="currentColor" style={{ opacity: 0.6 }} />
+                        )}
+                        <span>{tr.title || 'Untitled Track'}</span>
+                        {isCurrent && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onStopTrack();
+                            }}
+                            title={lang === 'ru' ? 'Остановить (Стоп)' : 'Stop'}
+                            style={{
+                              marginLeft: 6,
+                              padding: '2px 7px',
+                              borderRadius: 4,
+                              border: 'none',
+                              background: 'rgba(244, 63, 94, 0.2)',
+                              color: '#fb7185',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              fontSize: '0.72rem',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <Square size={10} fill="currentColor" />
+                            <span>{lang === 'ru' ? 'Стоп' : 'Stop'}</span>
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                    <td style={{ padding: '10px 12px', color: 'var(--text-muted)' }}>
+                      {tr.artist || '—'}
+                    </td>
+                    <td style={{ padding: '10px 12px', color: 'var(--text-muted)' }}>
+                      {tr.album || '—'}
+                    </td>
+                    <td
+                      style={{
+                        padding: '10px 12px',
+                        color: 'var(--text-dim)',
+                        textAlign: 'right',
+                      }}
+                    >
+                      {formatDuration(tr.duration_ms)}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

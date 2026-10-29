@@ -1,9 +1,9 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use common::paths::covers_dir;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Write;
-use tracing::{debug, warn};
+use tracing::debug;
 use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSession,
     GlobalSystemMediaTransportControlsSessionManager,
@@ -38,69 +38,173 @@ pub struct TrackMetadata {
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+#[derive(Debug, Clone)]
+struct TimelineInterpolator {
+    track_key: String,
+    last_raw_pos_ms: Option<u64>,
+    anchor_pos_ms: u64,
+    anchor_instant: Instant,
+    was_playing: bool,
+}
+
+impl Default for TimelineInterpolator {
+    fn default() -> Self {
+        Self {
+            track_key: String::new(),
+            last_raw_pos_ms: None,
+            anchor_pos_ms: 0,
+            anchor_instant: Instant::now(),
+            was_playing: false,
+        }
+    }
+}
+
+impl TimelineInterpolator {
+    fn current_pos_ms(&self, duration_ms: Option<u64>) -> u64 {
+        let mut pos = if self.was_playing {
+            self.anchor_pos_ms
+                .saturating_add(self.anchor_instant.elapsed().as_millis() as u64)
+        } else {
+            self.anchor_pos_ms
+        };
+        if let Some(dur) = duration_ms {
+            if dur > 0 {
+                pos = pos.min(dur);
+            }
+        }
+        pos
+    }
+
+    fn update_from_poll(
+        &mut self,
+        track_key: &str,
+        raw_pos_ms: Option<u64>,
+        duration_ms: Option<u64>,
+        last_updated_elapsed_ms: Option<u64>,
+        is_playing: bool,
+    ) {
+        if self.track_key != track_key {
+            // New track started or first time seeing this track
+            self.track_key = track_key.to_string();
+            self.last_raw_pos_ms = raw_pos_ms;
+            let base = raw_pos_ms.unwrap_or(0);
+            let max_dur = duration_ms.unwrap_or(600_000).max(1);
+            if is_playing {
+                if let Some(el) = last_updated_elapsed_ms {
+                    if el <= max_dur && base.saturating_add(el) <= max_dur {
+                        self.anchor_pos_ms = base.saturating_add(el);
+                    } else {
+                        self.anchor_pos_ms = base;
+                    }
+                } else {
+                    self.anchor_pos_ms = base;
+                }
+            } else {
+                self.anchor_pos_ms = base;
+            }
+            self.anchor_instant = Instant::now();
+            self.was_playing = is_playing;
+            return;
+        }
+
+        if raw_pos_ms != self.last_raw_pos_ms {
+            // Player explicitly updated timeline position (seek, pause, or periodic sync)
+            self.last_raw_pos_ms = raw_pos_ms;
+            self.anchor_pos_ms = raw_pos_ms.unwrap_or(0);
+            self.anchor_instant = Instant::now();
+        } else if self.was_playing && !is_playing {
+            // Transitioned from Playing -> Paused without SMTC raw position changing
+            self.anchor_pos_ms = self.current_pos_ms(duration_ms);
+            self.anchor_instant = Instant::now();
+        } else if !self.was_playing && is_playing {
+            // Transitioned from Paused -> Playing
+            self.anchor_instant = Instant::now();
+        }
+
+        self.was_playing = is_playing;
+    }
+}
 
 pub struct SmtcManager {
-    manager: Option<GlobalSystemMediaTransportControlsSessionManager>,
     cached_track: Arc<Mutex<Option<TrackMetadata>>>,
+    interpolator: Arc<Mutex<TimelineInterpolator>>,
     should_stop: Arc<AtomicBool>,
     _worker: Option<JoinHandle<()>>,
 }
 
 impl SmtcManager {
     pub fn new() -> Self {
-        let manager = match GlobalSystemMediaTransportControlsSessionManager::RequestAsync() {
-            Ok(op) => match op.get() {
-                Ok(mgr) => Some(mgr),
-                Err(e) => {
-                    warn!("Failed to get SMTC SessionManager: {e}");
-                    None
-                }
-            },
-            Err(e) => {
-                warn!("Failed to request SMTC SessionManager: {e}");
-                None
-            }
-        };
-
         let cached_track = Arc::new(Mutex::new(None));
+        let interpolator = Arc::new(Mutex::new(TimelineInterpolator::default()));
         let should_stop = Arc::new(AtomicBool::new(false));
 
-        let worker = if let Some(ref mgr) = manager {
-            let mgr_clone = mgr.clone();
-            let cache_clone = cached_track.clone();
-            let stop_clone = should_stop.clone();
+        let cache_clone = cached_track.clone();
+        let interp_clone = interpolator.clone();
+        let stop_clone = should_stop.clone();
 
-            Some(
-                thread::Builder::new()
-                    .name("wallmus-smtc-poller".to_string())
-                    .spawn(move || {
-                        while !stop_clone.load(Ordering::Relaxed) {
-                            let track = Self::fetch_track_from_session(&mgr_clone);
-                            *cache_clone.lock().unwrap() = track;
-                            thread::sleep(Duration::from_millis(300));
+        let worker = Some(
+            thread::Builder::new()
+                .name("wallmus-smtc-poller".to_string())
+                .spawn(move || {
+                    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+                    unsafe {
+                        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+                    }
+
+                    let mut mgr_opt: Option<GlobalSystemMediaTransportControlsSessionManager> = None;
+
+                    while !stop_clone.load(Ordering::Relaxed) {
+                        if mgr_opt.is_none() {
+                            if let Ok(op) = GlobalSystemMediaTransportControlsSessionManager::RequestAsync() {
+                                if let Ok(mgr) = op.get() {
+                                    mgr_opt = Some(mgr);
+                                }
+                            }
                         }
-                    })
-                    .expect("Failed to spawn SMTC poller thread"),
-            )
-        } else {
-            None
-        };
+
+                        if let Some(ref mgr) = mgr_opt {
+                            let track_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                Self::fetch_track_from_session(mgr, &interp_clone)
+                            }));
+                            match track_res {
+                                Ok(track) => {
+                                    let mut g = cache_clone.lock().unwrap_or_else(|e| e.into_inner());
+                                    *g = track;
+                                }
+                                Err(_) => {
+                                    debug!("SMTC track polling caught panic/unwind; resetting session manager");
+                                    mgr_opt = None;
+                                }
+                            }
+                        }
+                        thread::sleep(Duration::from_millis(300));
+                    }
+                })
+                .expect("Failed to spawn SMTC poller thread"),
+        );
 
         Self {
-            manager,
             cached_track,
+            interpolator,
             should_stop,
             _worker: worker,
         }
     }
 
     pub fn get_current_track(&self) -> Result<Option<TrackMetadata>> {
-        Ok(self.cached_track.lock().unwrap().clone())
+        let mut maybe_track = self.cached_track.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(ref mut t) = maybe_track {
+            let interp = self.interpolator.lock().unwrap_or_else(|e| e.into_inner());
+            t.position_ms = Some(interp.current_pos_ms(t.duration_ms));
+        }
+        Ok(maybe_track)
     }
 
     fn fetch_track_from_session(
         mgr: &GlobalSystemMediaTransportControlsSessionManager,
+        interpolator: &Arc<Mutex<TimelineInterpolator>>,
     ) -> Option<TrackMetadata> {
         let session = mgr.GetCurrentSession().ok()?;
 
@@ -138,12 +242,50 @@ impl SmtcManager {
         let album_artist = media_props.AlbumArtist().map(|s| s.to_string()).unwrap_or_default();
         let album_title = media_props.AlbumTitle().map(|s| s.to_string()).unwrap_or_default();
 
-        let (position_ms, duration_ms) = if let Ok(timeline) = session.GetTimelineProperties() {
-            let pos = timeline.Position().map(|p| (p.Duration / 10_000) as u64).ok();
-            let end = timeline.EndTime().map(|e| (e.Duration / 10_000) as u64).ok();
-            (pos, end)
-        } else {
-            (None, None)
+        let (raw_pos_ms, duration_ms, last_updated_elapsed_ms) =
+            if let Ok(timeline) = session.GetTimelineProperties() {
+                let pos = timeline
+                    .Position()
+                    .ok()
+                    .map(|p| (p.Duration.max(0) / 10_000) as u64);
+                let end = timeline
+                    .EndTime()
+                    .ok()
+                    .map(|e| (e.Duration.max(0) / 10_000) as u64);
+                let elapsed = timeline.LastUpdatedTime().ok().and_then(|dt| {
+                    if dt.UniversalTime <= 0 {
+                        return None;
+                    }
+                    // WinRT UniversalTime is 100ns intervals since 1601-01-01 UTC
+                    let now_unix_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .ok()?
+                        .as_millis() as i64;
+                    let last_unix_ms = (dt.UniversalTime / 10_000) - 11_644_473_600_000i64;
+                    let diff = now_unix_ms - last_unix_ms;
+                    if diff >= 0 && diff <= 3_600_000 {
+                        Some(diff as u64)
+                    } else {
+                        None
+                    }
+                });
+                (pos, end, elapsed)
+            } else {
+                (None, None, None)
+            };
+
+        let track_key = format!("{}|{}", artist, title);
+        let is_playing = playback_status == PlaybackStatus::Playing;
+        let position_ms = {
+            let mut interp = interpolator.lock().unwrap();
+            interp.update_from_poll(
+                &track_key,
+                raw_pos_ms,
+                duration_ms,
+                last_updated_elapsed_ms,
+                is_playing,
+            );
+            Some(interp.current_pos_ms(duration_ms))
         };
 
         // Extract thumbnail and save to covers_dir() if available
@@ -170,7 +312,7 @@ impl SmtcManager {
         let thumb_ref = media_props.Thumbnail().ok()?;
         let stream = thumb_ref.OpenReadAsync().ok()?.get().ok()?;
         let size = stream.Size().ok()? as usize;
-        if size == 0 {
+        if size == 0 || size > 10 * 1024 * 1024 {
             return None;
         }
 
@@ -181,11 +323,21 @@ impl SmtcManager {
 
         // Generate filename based on title + artist hash
         let hash = format!("{:x}", md5_hash(format!("{} - {}", title, artist).as_bytes()));
+        let tmp_file = covers_dir().join(format!("smtc_{hash}.tmp"));
         let cover_file = covers_dir().join(format!("smtc_{hash}.jpg"));
 
-        if !cover_file.exists() {
-            if let Ok(mut f) = File::create(&cover_file) {
-                let _ = f.write_all(&buf);
+        let should_write = match std::fs::metadata(&cover_file) {
+            Ok(meta) => buf.len() > meta.len() as usize + 2048,
+            Err(_) => true,
+        };
+
+        if should_write {
+            if let Ok(mut f) = File::create(&tmp_file) {
+                if f.write_all(&buf).is_ok() {
+                    let _ = f.flush();
+                    drop(f);
+                    let _ = std::fs::rename(&tmp_file, &cover_file);
+                }
             }
         }
 
@@ -193,42 +345,83 @@ impl SmtcManager {
     }
 
     pub fn play(&self) -> Result<bool> {
-        self.with_session(|s| {
-            s.TryPlayAsync()?.get().map_err(|e| anyhow::anyhow!("{e}"))
+        Self::dispatch_session_action(|s| {
+            if let Ok(op) = s.TryPlayAsync() {
+                let _ = op.get();
+            }
+            Ok(true)
         })
     }
 
     pub fn pause(&self) -> Result<bool> {
-        self.with_session(|s| {
-            s.TryPauseAsync()?.get().map_err(|e| anyhow::anyhow!("{e}"))
+        Self::dispatch_session_action(|s| {
+            if let Ok(op) = s.TryPauseAsync() {
+                let _ = op.get();
+            }
+            Ok(true)
         })
     }
 
     pub fn toggle_play_pause(&self) -> Result<bool> {
-        self.with_session(|s| {
-            s.TryTogglePlayPauseAsync()?.get().map_err(|e| anyhow::anyhow!("{e}"))
+        Self::dispatch_session_action(|s| {
+            if let Ok(op) = s.TryTogglePlayPauseAsync() {
+                let _ = op.get();
+            }
+            Ok(true)
         })
     }
 
     pub fn skip_next(&self) -> Result<bool> {
-        self.with_session(|s| {
-            s.TrySkipNextAsync()?.get().map_err(|e| anyhow::anyhow!("{e}"))
+        Self::dispatch_session_action(|s| {
+            if let Ok(op) = s.TrySkipNextAsync() {
+                let _ = op.get();
+            }
+            Ok(true)
         })
     }
 
     pub fn skip_previous(&self) -> Result<bool> {
-        self.with_session(|s| {
-            s.TrySkipPreviousAsync()?.get().map_err(|e| anyhow::anyhow!("{e}"))
+        Self::dispatch_session_action(|s| {
+            if let Ok(op) = s.TrySkipPreviousAsync() {
+                let _ = op.get();
+            }
+            Ok(true)
         })
     }
 
-    fn with_session<F>(&self, action: F) -> Result<bool>
+    pub fn seek(&self, position_ms: u64) -> Result<bool> {
+        {
+            let mut interp = self.interpolator.lock().unwrap_or_else(|e| e.into_inner());
+            interp.anchor_pos_ms = position_ms;
+            interp.anchor_instant = Instant::now();
+        }
+        let ticks = (position_ms as i64).saturating_mul(10_000);
+        Self::dispatch_session_action(move |s| {
+            if let Ok(op) = s.TryChangePlaybackPositionAsync(ticks) {
+                let _ = op.get();
+            }
+            Ok(true)
+        })
+    }
+
+    fn dispatch_session_action<F>(action: F) -> Result<bool>
     where
-        F: FnOnce(&GlobalSystemMediaTransportControlsSession) -> Result<bool>,
+        F: FnOnce(&GlobalSystemMediaTransportControlsSession) -> Result<bool> + Send + 'static,
     {
-        let mgr = self.manager.as_ref().context("SMTC SessionManager is not available")?;
-        let session = mgr.GetCurrentSession().context("No active media session")?;
-        action(&session)
+        std::thread::spawn(move || {
+            use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            }
+            if let Ok(op) = GlobalSystemMediaTransportControlsSessionManager::RequestAsync() {
+                if let Ok(mgr) = op.get() {
+                    if let Ok(session) = mgr.GetCurrentSession() {
+                        let _ = action(&session);
+                    }
+                }
+            }
+        });
+        Ok(true)
     }
 }
 

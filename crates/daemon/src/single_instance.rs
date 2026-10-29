@@ -1,5 +1,5 @@
 use anyhow::Result;
-use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
 use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex};
 
 /// RAII Guard ensuring only a single instance of wallmus runs concurrently.
@@ -31,9 +31,12 @@ impl SingleInstanceGuard {
 
 impl Drop for SingleInstanceGuard {
     fn drop(&mut self) {
-        if self.is_first_instance && !self.handle.is_invalid() {
+        if !self.handle.is_invalid() {
             unsafe {
-                let _ = ReleaseMutex(self.handle);
+                if self.is_first_instance {
+                    let _ = ReleaseMutex(self.handle);
+                }
+                let _ = CloseHandle(self.handle);
             }
         }
     }

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   UploadCloud,
   Film,
@@ -9,13 +9,22 @@ import {
   Monitor,
   Globe,
   Cpu,
+  Shuffle,
+  Repeat,
+  Layers,
+  Plus,
+  Check,
 } from 'lucide-react';
 import { WallpaperItem, WallpaperKind } from '../types';
 import { Language, translations } from '../i18n';
+import { requestDaemon } from '../api/ipc';
 
 interface WallpapersViewProps {
   wallpapers: WallpaperItem[];
   activeWallpaperId?: string;
+  wallpaperChangeMode?: 'random' | 'sequential' | 'off';
+  respectBindings?: boolean;
+  onSetChangeMode?: (mode: 'random' | 'sequential' | 'off', respectBindings?: boolean) => Promise<void>;
   onSetActiveWallpaper: (id: string) => Promise<void>;
   onImportWallpaper: (path: string) => Promise<void>;
   onDeleteWallpaper: (id: string) => Promise<void>;
@@ -25,6 +34,9 @@ interface WallpapersViewProps {
 export const WallpapersView: React.FC<WallpapersViewProps> = ({
   wallpapers,
   activeWallpaperId,
+  wallpaperChangeMode = 'random',
+  respectBindings = false,
+  onSetChangeMode,
   onSetActiveWallpaper,
   onImportWallpaper,
   onDeleteWallpaper,
@@ -37,6 +49,26 @@ export const WallpapersView: React.FC<WallpapersViewProps> = ({
     wallpapers[0] || null
   );
   const [isDragging, setIsDragging] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  useEffect(() => {
+    if (!selectedWallpaper && wallpapers.length > 0) {
+      const active = wallpapers.find((w) => w.id === activeWallpaperId) || wallpapers[0];
+      setSelectedWallpaper(active);
+    } else if (selectedWallpaper) {
+      const updated = wallpapers.find((w) => w.id === selectedWallpaper.id);
+      if (updated) {
+        setSelectedWallpaper(updated);
+      } else {
+        setSelectedWallpaper(wallpapers[0] || null);
+      }
+    }
+  }, [wallpapers, activeWallpaperId]);
 
   const filteredWallpapers = wallpapers.filter((w) => {
     if (filterType === 'all') return true;
@@ -72,8 +104,47 @@ export const WallpapersView: React.FC<WallpapersViewProps> = ({
     }
   };
 
+  const handlePickFile = async () => {
+    try {
+      const res = await requestDaemon<{ path: string | null }>('app.pickWallpaperFile');
+      if (res?.path) {
+        showToast(lang === 'ru' ? 'Импортируем обои...' : 'Importing wallpaper...');
+        await onImportWallpaper(res.path);
+        showToast(lang === 'ru' ? 'Обои успешно добавлены!' : 'Wallpaper added successfully!');
+      }
+    } catch (e: any) {
+      console.error('Failed to pick wallpaper file:', e);
+      showToast(lang === 'ru' ? `Ошибка: ${e?.message || e}` : `Error: ${e?.message || e}`);
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: '16px' }}>
+      {toastMessage && (
+        <div
+          style={{
+            position: 'fixed',
+            top: '20px',
+            right: '24px',
+            zIndex: 9999,
+            background: 'rgba(15, 23, 42, 0.92)',
+            backdropFilter: 'blur(12px)',
+            border: '1px solid rgba(0, 245, 212, 0.4)',
+            color: 'var(--accent-primary)',
+            borderRadius: '10px',
+            padding: '10px 18px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            fontSize: '0.88rem',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
+          }}
+        >
+          <Check size={16} />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
       {/* Header */}
       <div className="content-header" style={{ padding: '0 0 16px 0', background: 'transparent' }}>
         <div className="header-title-group">
@@ -81,26 +152,158 @@ export const WallpapersView: React.FC<WallpapersViewProps> = ({
           <p>{t.wallpapers_subtitle}</p>
         </div>
 
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-          {['all', 'video', 'animated', 'image', 'html', 'shader'].map((type) => (
+        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <button
+            className="btn btn-primary btn-sm"
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600, padding: '7px 16px' }}
+            onClick={handlePickFile}
+          >
+            <Plus size={15} />
+            <span>{lang === 'ru' ? 'Добавить обои' : 'Add Wallpaper'}</span>
+          </button>
+
+          <div className="btn-group">
+            {['all', 'video', 'animated', 'image', 'html', 'shader'].map((type) => (
+              <button
+                key={type}
+                className={`btn btn-sm ${filterType === type ? 'btn-primary' : 'btn-ghost'}`}
+                style={{ padding: '6px 12px' }}
+                onClick={() => setFilterType(type)}
+              >
+                {type === 'all'
+                  ? t.filter_all_types
+                  : type === 'video'
+                  ? t.filter_video
+                  : type === 'animated'
+                  ? t.filter_animated
+                  : type === 'image'
+                  ? t.filter_image
+                  : type === 'html'
+                  ? t.filter_html
+                  : t.filter_shader}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Auto-Change on Track Switch Control Bar */}
+      <div
+        className="glass-card"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '12px 18px',
+          borderRadius: 'var(--radius-lg)',
+          background: 'rgba(255, 255, 255, 0.03)',
+          border: '1px solid var(--border-card)',
+          gap: '16px',
+          flexWrap: 'wrap',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div
+            style={{
+              width: '36px',
+              height: '36px',
+              borderRadius: '10px',
+              background: wallpaperChangeMode !== 'off' ? 'rgba(0, 245, 212, 0.15)' : 'rgba(255, 255, 255, 0.05)',
+              color: wallpaperChangeMode !== 'off' ? 'var(--accent-primary, #00F5D4)' : 'var(--text-dim)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            {wallpaperChangeMode === 'random' ? (
+              <Shuffle size={18} />
+            ) : wallpaperChangeMode === 'sequential' ? (
+              <Repeat size={18} />
+            ) : (
+              <Layers size={18} />
+            )}
+          </div>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: '0.92rem', color: 'var(--text-main)' }}>
+              {t.auto_change_title}
+            </div>
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+              {t.auto_change_subtitle}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+          {/* Mode Selector Buttons */}
+          <div className="btn-group">
             <button
-              key={type}
-              className={`btn btn-sm ${filterType === type ? 'btn-primary' : 'btn-secondary'}`}
-              onClick={() => setFilterType(type)}
+              className={`btn btn-sm ${wallpaperChangeMode === 'random' ? 'btn-primary' : 'btn-ghost'}`}
+              style={{
+                fontSize: '0.82rem',
+                padding: '6px 14px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+              onClick={() => onSetChangeMode?.('random', respectBindings)}
             >
-              {type === 'all'
-                ? t.filter_all_types
-                : type === 'video'
-                ? t.filter_video
-                : type === 'animated'
-                ? t.filter_animated
-                : type === 'image'
-                ? t.filter_image
-                : type === 'html'
-                ? t.filter_html
-                : t.filter_shader}
+              <Shuffle size={14} />
+              <span>{t.auto_change_random}</span>
             </button>
-          ))}
+
+            <button
+              className={`btn btn-sm ${wallpaperChangeMode === 'sequential' ? 'btn-primary' : 'btn-ghost'}`}
+              style={{
+                fontSize: '0.82rem',
+                padding: '6px 14px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+              onClick={() => onSetChangeMode?.('sequential', respectBindings)}
+            >
+              <Repeat size={14} />
+              <span>{t.auto_change_sequential}</span>
+            </button>
+
+            <button
+              className={`btn btn-sm ${wallpaperChangeMode === 'off' ? 'btn-primary' : 'btn-ghost'}`}
+              style={{
+                fontSize: '0.82rem',
+                padding: '6px 14px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+              onClick={() => onSetChangeMode?.('off', respectBindings)}
+            >
+              <span>{t.auto_change_off}</span>
+            </button>
+          </div>
+
+          {/* Respect Bindings Checkbox */}
+          {wallpaperChangeMode !== 'off' && (
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: '0.8rem',
+                color: 'var(--text-muted)',
+                cursor: 'pointer',
+                userSelect: 'none',
+              }}
+              title={t.respect_bindings_hint}
+            >
+              <input
+                type="checkbox"
+                checked={respectBindings}
+                onChange={(e) => onSetChangeMode?.(wallpaperChangeMode, e.target.checked)}
+                style={{ cursor: 'pointer', accentColor: 'var(--accent-primary, #00F5D4)' }}
+              />
+              <span>{t.respect_bindings_label}</span>
+            </label>
+          )}
         </div>
       </div>
 
@@ -109,6 +312,7 @@ export const WallpapersView: React.FC<WallpapersViewProps> = ({
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '16px', overflowY: 'auto' }}>
           {/* Dropzone */}
           <div
+            onClick={handlePickFile}
             onDragOver={(e) => {
               e.preventDefault();
               setIsDragging(true);
@@ -270,11 +474,12 @@ export const WallpapersView: React.FC<WallpapersViewProps> = ({
               </div>
             </div>
 
-            <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
               <button
                 className="btn btn-primary"
                 onClick={() => onSetActiveWallpaper(selectedWallpaper.id)}
                 disabled={activeWallpaperId === selectedWallpaper.id}
+                style={{ padding: '9px 16px', gap: '8px', fontWeight: 600 }}
               >
                 <Monitor size={16} />
                 <span>{t.set_as_active}</span>
@@ -283,6 +488,7 @@ export const WallpapersView: React.FC<WallpapersViewProps> = ({
               <button
                 className="btn btn-danger btn-sm"
                 onClick={() => onDeleteWallpaper(selectedWallpaper.id)}
+                style={{ padding: '8px 14px', gap: '8px' }}
               >
                 <Trash2 size={14} />
                 <span>{t.delete_wallpaper}</span>

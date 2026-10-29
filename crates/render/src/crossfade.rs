@@ -28,6 +28,22 @@ impl Renderer for ImageRendererWrapper {
     fn unload(&mut self) -> Result<()> {
         self.0.lock().unwrap().unload()
     }
+
+    fn update_mouse(&mut self, x: f32, y: f32) {
+        let hwnd_val = if let Ok(mut g) = self.0.lock() {
+            g.update_mouse(x, y);
+            g.hwnd
+        } else {
+            0
+        };
+        if hwnd_val != 0 {
+            unsafe {
+                let _ = windows::Win32::Graphics::Gdi::UpdateWindow(
+                    windows::Win32::Foundation::HWND(hwnd_val as _),
+                );
+            }
+        }
+    }
 }
 
 /// Active visual layer on the desktop host.
@@ -65,11 +81,12 @@ pub struct DualLayerHost {
 impl DualLayerHost {
     /// Create dual-layer host for a specific monitor.
     pub fn new(monitor: MonitorInfo) -> Result<Self> {
-        let layer_a = DesktopHostWindow::create(monitor.clone(), desktop_host::RenderMode::Video)
+        let layer_a = DesktopHostWindow::create(monitor.clone(), desktop_host::RenderMode::StaticImage)
             .context("Failed to create DesktopHostWindow Layer A")?;
-        let layer_b = DesktopHostWindow::create(monitor.clone(), desktop_host::RenderMode::Video)
+        let layer_b = DesktopHostWindow::create(monitor.clone(), desktop_host::RenderMode::StaticImage)
             .context("Failed to create DesktopHostWindow Layer B")?;
 
+        let _ = layer_a.bring_above(layer_b.hwnd);
         let _ = layer_a.set_alpha(255);
         let _ = layer_b.set_alpha(0);
 
@@ -88,11 +105,11 @@ impl DualLayerHost {
     /// Load initial wallpaper on the active layer without crossfade animation.
     pub fn load_initial(&mut self, wallpaper: &WallpaperItem) -> Result<()> {
         self.active_layer = ActiveLayer::A;
-        let _ = self.layer_a.set_alpha(255);
-        let _ = self.layer_b.set_alpha(0);
-
         let rend = setup_layer_renderer(&mut self.layer_a, &self.monitor, wallpaper)?;
         self.renderer_a = Some(rend);
+        let _ = self.layer_a.bring_above(self.layer_b.hwnd);
+        let _ = self.layer_a.set_alpha(255);
+        let _ = self.layer_b.set_alpha(0);
 
         if let Some(ref mut b) = self.renderer_b {
             let _ = b.unload();
@@ -276,16 +293,80 @@ impl DualLayerHost {
     pub fn revalidate(&mut self) -> Result<()> {
         self.layer_a.revalidate()?;
         self.layer_b.revalidate()?;
+        match self.active_layer {
+            ActiveLayer::A => {
+                let _ = self.layer_a.bring_above(self.layer_b.hwnd);
+                if self.fade_animation.is_none() {
+                    let _ = self.layer_a.set_alpha(255);
+                    let _ = self.layer_b.set_alpha(0);
+                }
+                unsafe {
+                    let _ = windows::Win32::Graphics::Gdi::InvalidateRect(self.layer_a.hwnd, None, false);
+                    let _ = windows::Win32::Graphics::Gdi::UpdateWindow(self.layer_a.hwnd);
+                }
+            }
+            ActiveLayer::B => {
+                let _ = self.layer_b.bring_above(self.layer_a.hwnd);
+                if self.fade_animation.is_none() {
+                    let _ = self.layer_b.set_alpha(255);
+                    let _ = self.layer_a.set_alpha(0);
+                }
+                unsafe {
+                    let _ = windows::Win32::Graphics::Gdi::InvalidateRect(self.layer_b.hwnd, None, false);
+                    let _ = windows::Win32::Graphics::Gdi::UpdateWindow(self.layer_b.hwnd);
+                }
+            }
+        }
         Ok(())
     }
 
     /// Forward normalized mouse coordinates (0.0 .. 1.0) to active wallpaper renderer.
     pub fn update_mouse(&mut self, norm_x: f32, norm_y: f32) {
-        if let Some(ref mut a) = self.renderer_a {
-            a.update_mouse(norm_x, norm_y);
+        if self.fade_animation.is_some() {
+            if let Some(ref mut a) = self.renderer_a {
+                a.update_mouse(norm_x, norm_y);
+            }
+            if let Some(ref mut b) = self.renderer_b {
+                b.update_mouse(norm_x, norm_y);
+            }
+        } else {
+            match self.active_layer {
+                ActiveLayer::A => {
+                    if let Some(ref mut a) = self.renderer_a {
+                        a.update_mouse(norm_x, norm_y);
+                    }
+                }
+                ActiveLayer::B => {
+                    if let Some(ref mut b) = self.renderer_b {
+                        b.update_mouse(norm_x, norm_y);
+                    }
+                }
+            }
         }
-        if let Some(ref mut b) = self.renderer_b {
-            b.update_mouse(norm_x, norm_y);
+    }
+
+    /// Forward audio-reactive bass pulse (0.0 .. 1.0) to active wallpaper renderer.
+    pub fn update_bass(&mut self, bass: f32) {
+        if self.fade_animation.is_some() {
+            if let Some(ref mut a) = self.renderer_a {
+                a.update_bass(bass);
+            }
+            if let Some(ref mut b) = self.renderer_b {
+                b.update_bass(bass);
+            }
+        } else {
+            match self.active_layer {
+                ActiveLayer::A => {
+                    if let Some(ref mut a) = self.renderer_a {
+                        a.update_bass(bass);
+                    }
+                }
+                ActiveLayer::B => {
+                    if let Some(ref mut b) = self.renderer_b {
+                        b.update_bass(bass);
+                    }
+                }
+            }
         }
     }
 }
@@ -328,10 +409,38 @@ fn setup_layer_renderer(
 
     match wallpaper.kind.as_str() {
         "video" => {
-            let mut mpv = MpvRenderer::new(layer.hwnd.0 as usize, monitor.width, monitor.height)
-                .context("Failed to initialize MpvRenderer for crossfade layer")?;
-            mpv.load(&wallpaper.processed_path)?;
-            Ok(Box::new(mpv))
+            match MpvRenderer::new(layer.hwnd.0 as usize, monitor.width, monitor.height)
+                .and_then(|mut mpv| {
+                    mpv.load(&wallpaper.processed_path)?;
+                    Ok(mpv)
+                }) {
+                Ok(mpv) => Ok(Box::new(mpv)),
+                Err(e) => {
+                    tracing::warn!(
+                        "MpvRenderer failed for '{}' ({e:#}); falling back to static frame renderer",
+                        wallpaper.name
+                    );
+                    let fallback_img = if std::path::Path::new(&wallpaper.thumb_path).exists() {
+                        wallpaper.thumb_path.as_str()
+                    } else {
+                        wallpaper.processed_path.as_str()
+                    };
+                    let mut img = StaticImageRenderer::new(layer.hwnd, monitor.width, monitor.height);
+                    let _ = img.load(fallback_img);
+                    let img_arc = Arc::new(Mutex::new(img));
+                    let img_cb = img_arc.clone();
+                    layer.set_paint_callback(move |hdc, _w, _h| {
+                        if let Ok(g) = img_cb.try_lock() {
+                            g.paint(hdc);
+                        }
+                    });
+                    unsafe {
+                        let _ = windows::Win32::Graphics::Gdi::InvalidateRect(layer.hwnd, None, false);
+                        let _ = windows::Win32::Graphics::Gdi::UpdateWindow(layer.hwnd);
+                    }
+                    Ok(Box::new(ImageRendererWrapper(img_arc)))
+                }
+            }
         }
         "html" => {
             let mut html = crate::html::HtmlRenderer::new(layer.hwnd, monitor.width, monitor.height);
@@ -349,12 +458,13 @@ fn setup_layer_renderer(
             let img_arc = Arc::new(Mutex::new(img));
             let img_cb = img_arc.clone();
             layer.set_paint_callback(move |hdc, _w, _h| {
-                if let Ok(g) = img_cb.lock() {
+                if let Ok(g) = img_cb.try_lock() {
                     g.paint(hdc);
                 }
             });
             unsafe {
                 let _ = windows::Win32::Graphics::Gdi::InvalidateRect(layer.hwnd, None, false);
+                let _ = windows::Win32::Graphics::Gdi::UpdateWindow(layer.hwnd);
             }
             Ok(Box::new(ImageRendererWrapper(img_arc)))
         }
