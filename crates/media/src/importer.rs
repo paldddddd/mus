@@ -379,12 +379,14 @@ pub fn import_wallpaper(source: &Path, copy_to_lib: bool) -> Result<WallpaperIte
 
     let probe = probe_media(source).context("Failed to probe source media")?;
 
+    static WP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let cnt = WP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::from_secs(0))
-        .as_secs() as i64;
+        .as_millis();
 
-    let id = format!("wp_{}", now);
+    let id = format!("wp_{}_{}", now, cnt);
     let stem = source
         .file_stem()
         .and_then(|s| s.to_str())
@@ -430,6 +432,6 @@ pub fn import_wallpaper(source: &Path, copy_to_lib: bool) -> Result<WallpaperIte
         } else {
             None
         },
-        created_at: now,
+        created_at: (now / 1000) as i64,
     })
 }

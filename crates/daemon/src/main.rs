@@ -384,12 +384,26 @@ impl IpcHandler for DaemonContext {
                     .get("id")
                     .and_then(|v| v.as_str())
                     .context("Missing 'id' parameter")?;
+                if let Ok(Some(wp)) = self.db.get_wallpaper(id) {
+                    let _ = std::fs::remove_file(&wp.processed_path);
+                    let _ = std::fs::remove_file(&wp.thumb_path);
+                    let _ = self.db.set_kv(&format!("deleted_default:{}", wp.name), "true");
+                }
                 self.db.delete_wallpaper(id)?;
                 {
                     let mut active = self.active_wallpaper.lock().unwrap();
                     if active.as_ref().map(|w| w.id == id).unwrap_or(false) {
                         let remaining = self.db.list_wallpapers().unwrap_or_default();
                         *active = remaining.into_iter().next();
+                        let new_id = active.as_ref().map(|w| w.id.clone());
+                        let mut cfg = self.config.lock().unwrap();
+                        cfg.active_wallpaper_id = new_id.clone();
+                        let _ = cfg.save();
+                        if let Some(ref nid) = new_id {
+                            let _ = self.db.set_kv("active_wallpaper_id", nid);
+                        } else {
+                            let _ = self.db.set_kv("active_wallpaper_id", "");
+                        }
                     }
                 }
                 Ok(serde_json::json!({ "deleted": id }))
@@ -1683,23 +1697,78 @@ fn run_daemon(open_ui_on_start: bool) -> Result<()> {
         }
     }
 
-    if wallpapers.is_empty() || !wallpapers.iter().any(|w| Path::new(&w.processed_path).exists()) {
-        info!("No valid wallpapers in library. Auto-discovering and importing default sample wallpaper...");
-        let candidates = [
-            "test_wallpaper.bmp",
-            "assets/wallpaper.jpg",
-            "assets/wallpaper.bmp",
+    // Default wallpapers auto-discovery and initial seeding:
+    // Bundled default wallpapers are located in assets/wallpapers or assets.
+    // If user deletes any of them, it stays deleted and won't be re-seeded.
+    let seeded = db.get_kv("default_wallpapers_seeded_v1").ok().flatten().is_some();
+    if !seeded {
+        info!("Checking and seeding default bundled wallpapers into library...");
+        let search_dirs = [
+            "assets/wallpapers",
+            "assets",
         ];
-        for c in &candidates {
-            if let Some(p) = resolve_existing_path(c) {
-                if let Ok(item) = import_wallpaper(&p, true) {
-                    let _ = db.save_wallpaper(&item);
-                    info!("Successfully auto-imported default wallpaper '{}' ({})", item.name, item.id);
-                    wallpapers.push(item);
-                    break;
+        let mut default_paths = Vec::new();
+        for dir_name in &search_dirs {
+            if let Some(dir_path) = resolve_existing_path(dir_name) {
+                if dir_path.is_dir() {
+                    if let Ok(entries) = std::fs::read_dir(&dir_path) {
+                        for entry in entries.flatten() {
+                            let p = entry.path();
+                            if p.is_file() {
+                                let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                                if ["jpg", "jpeg", "png", "webp", "bmp", "mp4", "gif"].contains(&ext.as_str()) {
+                                    default_paths.push(p);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !default_paths.is_empty() {
+                break;
+            }
+        }
+
+        // Fallback candidate files if no directory matched
+        if default_paths.is_empty() {
+            let candidates = [
+                "test_wallpaper.bmp",
+                "assets/wallpaper.jpg",
+                "assets/wallpaper.bmp",
+            ];
+            for c in &candidates {
+                if let Some(p) = resolve_existing_path(c) {
+                    if p.is_file() {
+                        default_paths.push(p);
+                    }
                 }
             }
         }
+
+        default_paths.sort();
+
+        for p in default_paths {
+            let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if db.get_kv(&format!("deleted_default:{}", stem)).ok().flatten().is_some() {
+                info!("Skipping previously deleted default wallpaper: {}", stem);
+                continue;
+            }
+            if wallpapers.iter().any(|w| w.name == stem) {
+                info!("Default wallpaper '{}' already exists in library, skipping import", stem);
+                continue;
+            }
+            match import_wallpaper(&p, true) {
+                Ok(item) => {
+                    let _ = db.save_wallpaper(&item);
+                    info!("Successfully auto-imported default wallpaper '{}' ({})", item.name, item.id);
+                    wallpapers.push(item);
+                }
+                Err(e) => {
+                    warn!("Failed to auto-import default wallpaper {}: {:#}", p.display(), e);
+                }
+            }
+        }
+        let _ = db.set_kv("default_wallpapers_seeded_v1", "true");
     }
 
     // Prefer saved active_wallpaper_id from config or DB KV (only if its file exists on disk!)

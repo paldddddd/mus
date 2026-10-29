@@ -74,6 +74,12 @@ Copy-Item (Join-Path $DepsDir "ffprobe.exe") $PackageDir -Force
 # Copy license and readme
 Copy-Item (Join-Path $ProjectRoot "LICENSE.txt") $PackageDir -Force
 
+# Copy bundled assets (default wallpapers)
+$AssetsDir = Join-Path $ProjectRoot "assets"
+if (Test-Path $AssetsDir) {
+    Copy-Item $AssetsDir $PackageDir -Recurse -Force
+}
+
 Write-Host "Package assembled in: $PackageDir" -ForegroundColor Green
 
 # 5. Create Portable Package

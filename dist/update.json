@@ -2,8 +2,8 @@
   "current_version": "0.1.0",
   "latest_version": "0.1.0",
   "update_available": false,
-  "release_notes": "wallmus v0.1.0: Full feature update with synced lyrics, audio visualizer, snap particle attraction, separate customization panel, fixed widget button layout, and GitHub automatic updates.",
+  "release_notes": "wallmus v0.1.0: Full feature update with 5 default 4K wallpapers (deletable), synced lyrics, audio visualizer, snap particle attraction, separate customization panel, fixed widget button layout, and GitHub automatic updates.",
   "download_url": "https://github.com/paldddddd/mus/releases/latest/download/wallmus-v0.1.0-release.zip",
-  "published_at": "2026-10-29T15:28:49.395655+00:00",
-  "sha256": "8e373d15eb31116994cef864ed86555b47c5c648b9d8e00df2090633345b01b0"
+  "published_at": "2026-10-29T15:43:22.821408+00:00",
+  "sha256": "185297d0ffe8d68b1203e36fa94fef057a1d7278b38604b6401093386e3428c4"
 }
