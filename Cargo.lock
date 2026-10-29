@@ -258,7 +258,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "audio-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "common",
@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "common"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -988,7 +988,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-host"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "common",
@@ -1713,7 +1713,7 @@ dependencies = [
 
 [[package]]
 name = "governor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "common",
@@ -1905,7 +1905,7 @@ checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
 
 [[package]]
 name = "html-host"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "raw-window-handle",
@@ -2532,7 +2532,7 @@ dependencies = [
 
 [[package]]
 name = "library"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2666,7 +2666,7 @@ dependencies = [
 
 [[package]]
 name = "media"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "common",
@@ -3710,7 +3710,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "render"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -5339,7 +5339,7 @@ dependencies = [
 
 [[package]]
 name = "wallmus"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "audio-engine",
@@ -5688,7 +5688,7 @@ dependencies = [
 
 [[package]]
 name = "widget"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "audio-engine",
