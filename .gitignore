@@ -14,3 +14,4 @@ node_modules/
 /dist/
 /ui/src-tauri/target/
 *.zip
+*.pdf
