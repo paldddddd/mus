@@ -50,7 +50,7 @@ if (-not $SkipFrontend) {
 
 # 3. Build Rust Binaries in Release Mode
 Write-Host "`n[2/5] Compiling Rust binaries in --release mode..." -ForegroundColor Yellow
-$env:PATH = "C:\Users\pald\.cargo\bin;$env:PATH"
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 cargo build --release -p wallmus -p wallmus-ui -p html-host
 if ($LASTEXITCODE -ne 0) {
     throw "Cargo release build failed with exit code $LASTEXITCODE"
