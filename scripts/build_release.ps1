@@ -18,7 +18,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Resolve-Path "$PSScriptRoot\.."
 $DistDir = Join-Path $ProjectRoot "dist"
-$Version = "0.1.0"
+$Version = "0.2.0"
 
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host "  wallmus Production Build & Packaging (v$Version)        " -ForegroundColor Cyan
